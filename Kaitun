@@ -155,60 +155,71 @@ getgenv().Settings = {
 	AutoTutorial = false,
 }
 
---// PROFESSIONAL RESPONSIVE STATUS UI
+--// CONFIG UI PANEL
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local LP = Players.LocalPlayer
 local PG = LP:WaitForChild("PlayerGui")
-
-if PG:FindFirstChild("FarmStatusUI") then
-    PG.FarmStatusUI:Destroy()
-end
-
 local Settings = getgenv().Settings
 
+if PG:FindFirstChild("FarmConfigUI") then
+    PG.FarmConfigUI:Destroy()
+end
+
 local function tableToString(tbl)
-    if typeof(tbl) ~= "table" then
-        return tostring(tbl)
-    end
-    if #tbl == 0 then
-        return "None"
-    end
+    if typeof(tbl) ~= "table" then return tostring(tbl) end
     return table.concat(tbl, ", ")
 end
 
+local function parseInput(oldValue, text)
+    if typeof(oldValue) == "boolean" then
+        return text:lower() == "true"
+    elseif typeof(oldValue) == "number" then
+        return tonumber(text) or oldValue
+    elseif typeof(oldValue) == "table" then
+        if text == "" then
+            return {}
+        end
+        local split = string.split(text, ",")
+        for i,v in ipairs(split) do
+            split[i] = v:gsub("^%s*(.-)%s*$", "%1")
+        end
+        return split
+    else
+        return text
+    end
+end
+
 local gui = Instance.new("ScreenGui")
-gui.Name = "FarmStatusUI"
+gui.Name = "FarmConfigUI"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.Parent = PG
 
--- Open button (responsive)
+-- OPEN BUTTON
 local openBtn = Instance.new("TextButton")
-openBtn.Size = UDim2.new(0.055,0,0.08,0)
-openBtn.Position = UDim2.new(0.015,0,0.45,0)
-openBtn.Text = "🌱"
+openBtn.Size = UDim2.new(0.05,0,0.08,0)
+openBtn.Position = UDim2.new(0.01,0,0.45,0)
+openBtn.Text = "⚙"
 openBtn.TextScaled = true
 openBtn.Font = Enum.Font.GothamBold
-openBtn.BackgroundColor3 = Color3.fromRGB(25,25,25)
+openBtn.BackgroundColor3 = Color3.fromRGB(30,30,30)
 openBtn.TextColor3 = Color3.new(1,1,1)
 openBtn.Parent = gui
 Instance.new("UICorner", openBtn)
 
--- Main frame (responsive)
+-- MAIN FRAME
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0.28,0,0.65,0)
-main.Position = UDim2.new(0.08,0,0.18,0)
-main.BackgroundColor3 = Color3.fromRGB(18,18,18)
-main.BorderSizePixel = 0
+main.Size = UDim2.new(0.3,0,0.7,0)
+main.Position = UDim2.new(0.07,0,0.15,0)
+main.BackgroundColor3 = Color3.fromRGB(20,20,20)
 main.Parent = gui
 Instance.new("UICorner", main)
 
--- Top bar
+-- TOP BAR
 local top = Instance.new("Frame")
 top.Size = UDim2.new(1,0,0.08,0)
-top.BackgroundColor3 = Color3.fromRGB(28,28,28)
-top.BorderSizePixel = 0
+top.BackgroundColor3 = Color3.fromRGB(35,35,35)
 top.Parent = main
 Instance.new("UICorner", top)
 
@@ -216,7 +227,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(0.8,0,1,0)
 title.Position = UDim2.new(0.03,0,0,0)
 title.BackgroundTransparency = 1
-title.Text = "Grow A Garden Dashboard"
+title.Text = "Farm Config Panel"
 title.TextScaled = true
 title.Font = Enum.Font.GothamBold
 title.TextColor3 = Color3.new(1,1,1)
@@ -229,12 +240,12 @@ closeBtn.Position = UDim2.new(0.9,0,0.18,0)
 closeBtn.Text = "X"
 closeBtn.TextScaled = true
 closeBtn.Font = Enum.Font.GothamBold
-closeBtn.BackgroundColor3 = Color3.fromRGB(180,50,50)
+closeBtn.BackgroundColor3 = Color3.fromRGB(170,50,50)
 closeBtn.TextColor3 = Color3.new(1,1,1)
 closeBtn.Parent = top
 Instance.new("UICorner", closeBtn)
 
--- Scroll container
+-- SCROLL
 local scroll = Instance.new("ScrollingFrame")
 scroll.Size = UDim2.new(1,-10,0.9,-10)
 scroll.Position = UDim2.new(0,5,0.09,5)
@@ -248,51 +259,95 @@ local layout = Instance.new("UIListLayout")
 layout.Padding = UDim.new(0,5)
 layout.Parent = scroll
 
-local function createRow(titleText, valueText, enabled)
+local function createToggle(name)
     local row = Instance.new("Frame")
-    row.Size = UDim2.new(1,0,0,50)
-    row.BackgroundColor3 = enabled and Color3.fromRGB(30,90,30) or Color3.fromRGB(60,60,60)
+    row.Size = UDim2.new(1,0,0,45)
+    row.BackgroundColor3 = Color3.fromRGB(40,40,40)
     row.Parent = scroll
     Instance.new("UICorner", row)
 
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(0.4,0,1,0)
-    title.Position = UDim2.new(0.03,0,0,0)
-    title.BackgroundTransparency = 1
-    title.Text = titleText
-    title.TextScaled = true
-    title.Font = Enum.Font.GothamBold
-    title.TextColor3 = Color3.new(1,1,1)
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Parent = row
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.6,0,1,0)
+    label.Position = UDim2.new(0.03,0,0,0)
+    label.BackgroundTransparency = 1
+    label.Text = name
+    label.TextScaled = true
+    label.TextColor3 = Color3.new(1,1,1)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = row
 
-    local value = Instance.new("TextLabel")
-    value.Size = UDim2.new(0.55,0,1,0)
-    value.Position = UDim2.new(0.42,0,0,0)
-    value.BackgroundTransparency = 1
-    value.Text = valueText
-    value.TextScaled = true
-    value.Font = Enum.Font.Gotham
-    value.TextColor3 = Color3.fromRGB(220,220,220)
-    value.TextXAlignment = Enum.TextXAlignment.Right
-    value.Parent = row
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(0.25,0,0.65,0)
+    button.Position = UDim2.new(0.72,0,0.17,0)
+    button.Parent = row
+    Instance.new("UICorner", button)
+
+    local function update()
+        local state = Settings[name]
+        button.Text = state and "ON" or "OFF"
+        button.BackgroundColor3 = state and Color3.fromRGB(40,140,40) or Color3.fromRGB(140,40,40)
+    end
+
+    button.MouseButton1Click:Connect(function()
+        Settings[name] = not Settings[name]
+        update()
+    end)
+
+    update()
 end
 
--- STATUS
-createRow("Auto Harvest", Settings.AutoHarvest and "ON" or "OFF", Settings.AutoHarvest)
-createRow("Auto Plant", Settings.AutoPlant and "ON" or "OFF", Settings.AutoPlant)
-createRow("Auto Water", Settings.AutoWater and "ON" or "OFF", Settings.AutoWater)
-createRow("Auto Sell", Settings.SellWhenBagFull and "ON" or "OFF", Settings.SellWhenBagFull)
-createRow("Auto Steal", Settings.AutoSteal and "ON" or "OFF", Settings.AutoSteal)
+local function createInput(name)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1,0,0,45)
+    row.BackgroundColor3 = Color3.fromRGB(40,40,40)
+    row.Parent = scroll
+    Instance.new("UICorner", row)
 
--- CONFIG VALUES
-createRow("Buy Seeds", tableToString(Settings.AutoBuySeeds), #Settings.AutoBuySeeds > 0)
-createRow("Buy Gear", tableToString(Settings.AutoBuyGear), #Settings.AutoBuyGear > 0)
-createRow("Buy Crates", tableToString(Settings.AutoBuyCrates), #Settings.AutoBuyCrates > 0)
-createRow("Buy Pets", tableToString(Settings.PetBuyTypes), #Settings.PetBuyTypes > 0)
-createRow("Mail To", Settings.MailRecipient ~= "" and Settings.MailRecipient or "None", Settings.AutoMail)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.35,0,1,0)
+    label.Position = UDim2.new(0.03,0,0,0)
+    label.BackgroundTransparency = 1
+    label.Text = name
+    label.TextScaled = true
+    label.TextColor3 = Color3.new(1,1,1)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = row
 
--- Open / Close
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(0.55,0,0.65,0)
+    box.Position = UDim2.new(0.42,0,0.17,0)
+    box.Text = tableToString(Settings[name])
+    box.TextScaled = true
+    box.Font = Enum.Font.Gotham
+    box.BackgroundColor3 = Color3.fromRGB(55,55,55)
+    box.TextColor3 = Color3.new(1,1,1)
+    box.Parent = row
+    Instance.new("UICorner", box)
+
+    box.FocusLost:Connect(function()
+        Settings[name] = parseInput(Settings[name], box.Text)
+    end)
+end
+
+-- TOGGLES
+createToggle("AutoHarvest")
+createToggle("AutoPlant")
+createToggle("AutoWater")
+createToggle("SellWhenBagFull")
+createToggle("AutoSteal")
+createToggle("AutoMail")
+createToggle("AutoDoubleOrNothing")
+
+-- INPUTS
+createInput("LoopDelay")
+createInput("MoveSpeed")
+createInput("MailRecipient")
+createInput("AutoBuySeeds")
+createInput("AutoBuyGear")
+createInput("AutoBuyCrates")
+createInput("PetBuyTypes")
+
+-- OPEN/CLOSE
 closeBtn.MouseButton1Click:Connect(function()
     main.Visible = false
 end)
@@ -301,7 +356,7 @@ openBtn.MouseButton1Click:Connect(function()
     main.Visible = not main.Visible
 end)
 
--- Dragging
+-- DRAGGING
 local dragging = false
 local dragStart
 local startPos
