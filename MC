@@ -1,0 +1,394 @@
+getgenv().Settings = {
+	LoopDelay = 0.15,                       -- seconds between main farm cycles (lower = faster/heavier)
+	MoveSpeed = 25,                         -- studs/sec for all teleport-glides; keep <= ~30 or the anti-cheat rubber-bands you
+
+	AutoHarvest = true,
+	HarvestSeedFilter = {},                 -- {} = all; else names e.g. {"Carrot","Strawberry"}
+	HarvestMutationFilter = {},             -- {} = all; "None"=unmutated; e.g. {"Gold","Rainbow"}
+	HarvestHighestValueFirst = false,
+	MinFruitValue = 0,                      -- only harvest fruit worth >= this ($)
+	StayInGarden = true,
+	HarvestWeightComparison = "Any",        -- "Any" | "Above" | "Below"
+	HarvestWeightThreshold = 0,             -- kg; paired with HarvestWeightComparison
+	HarvestCollectDelay = 0,
+
+	SellWhenBagFull = true,
+	SellEverySeconds = 0,                   -- 0 = off, else sell on this interval
+	ProtectFavorited = true,                -- true = keep favorited; false = unfavorite all then sell everything
+	SellProtect = false,                    -- temp-favorite matching fruit so it isn't sold (empty filters = protect EVERYTHING)
+	SellProtectSeedFilter = {},             -- {} = all; else names e.g. {"Carrot"}
+	SellProtectMutationFilter = {},         -- {} = all; "None"=unmutated; e.g. {"Gold","Rainbow"}
+	SellAtHighPriceMult = 0,                -- 0 = off; else only sell a species when its price mult >= this
+	AutoDoubleOrNothing = false,            -- only works while standing AT Steven (no auto-nav)
+	DoNCashOutWins = 1,                     -- cash out after this many wins
+
+	AutoBuySeeds = {"Dragon's Breath", "Moon Bloom", "Venom Spitter"},                      -- {} = none; else names e.g. {"Carrot","Strawberry"}
+	AutoBuyAllSeeds = false,
+	AutoBuyGear = {"Super Watering Can", "Common Sprinkler", "Common Watering Can", "Uncommon Sprinkler", "Rare Sprinkler", "Legendary Sprinkler", "Super Sprinkler"},                       -- {} = none; else names e.g. {"Sprinkler","Watering Can"}
+	AutoBuyAllGear = false,
+	AutoBuyCrates = {"Ladder Crate", "Teleporter Pad Crate", "Owner Door Crate"},                     -- {} = none; else crate names
+	AutoBuyAllCrates = false,
+
+	AutoFavorite = false,
+	FavoriteMutationFilter = {},            -- {} = all; "None"=unmutated; e.g. {"Gold","Rainbow"}
+
+	AutoFarmFavorite = false,
+	FarmFavoriteSeedFilter = {},            -- {} = all; else names e.g. {"Carrot"}
+	FarmFavoriteMutationFilter = {},        -- {} = all; "None"=unmutated; e.g. {"Gold","Rainbow"}
+	FarmFavoriteMode = "Favorite",          -- "Favorite" | "Unfavorite"
+	FarmFavoriteWeightThreshold = 0,        -- kg; 0 = ignore weight
+	FarmFavoriteWeightAbove = true,         -- true = ABOVE threshold; false = BELOW
+	FarmFavoriteDelay = 0.1,
+
+	AutoOpenSeedPack = false,
+	AutoEquipSeedPack = false,
+	AutoSkipSeedPack = false,
+	SeedPackName = "",                      -- "" = any pack; else exact pack name e.g. "Common Seed Pack"
+
+	AutoWater = false,
+	WaterSeedFilter = {},                   -- {} = all; else names e.g. {"Carrot"}
+	WaterPlantsPerCycle = 8,
+	WaterLoopDelay = 1,                     -- seconds between water cycles
+
+	AutoPlant = false,                      -- must be OFF for Reroll to run
+	PlantSeeds = {},                        -- {} = none; else names e.g. {"Carrot","Strawberry"}
+	PlantSpot = "Plot",                     -- "Plot" | "Saved"
+	PlantSavedCFrame = "",                  -- CFrame string used when PlantSpot="Saved"
+
+	Reroll = false,                         -- needs BOTH RerollSeed and RerollWant non-empty AND AutoPlant=false
+	RerollSeed = {},                        -- seed(s) to plant+shovel until match e.g. {"Carrot"}
+	RerollWant = {},                        -- desired resulting species e.g. {"Carrot"}
+
+	AutoShovel = false,
+	ShovelTree = false,                     -- also shovel trees/large plants
+	ShovelSeedFilter = {},                  -- {} = all; else names e.g. {"Carrot"}
+	ShovelMutationFilter = {},              -- {} = all; "None"=unmutated; e.g. {"Gold","Rainbow"}
+	ShovelWeightComparison = "Above",       -- "Above" | "Below"
+	ShovelWeightThreshold = 0,
+	ShovelIgnoreFavorited = true,
+	ShovelDelay = 0.1,
+
+	AutoSprinkler = false,
+	SprinklerTypes = {},                    -- {} = none; else names e.g. {"Basic Sprinkler"}
+	SprinklerTargetPlant = {},              -- {} = anywhere; else plant names e.g. {"Carrot"}
+
+	AutoTrowel = false,
+	TrowelSeedFilter = {},                  -- {} = all; else names e.g. {"Carrot"}
+	TrowelMaxPerCycle = 5,
+	TrowelSpot = "Current",                 -- "Current" | "Saved"
+	TrowelSavedCFrame = "",                 -- CFrame string used when TrowelSpot="Saved"
+
+	AutoCollectDroppedSeeds = true,
+	AutoCollectDropItems = true,
+	AutoCollectDropFruits = false,
+	CollectDropFruitsOnlyMine = false,
+	CollectDropPerCycle = 3,
+
+	AutoCollectEventSeeds = true,          -- Gold/Rainbow event seed-pack markers
+	EventSeedMaxPerCycle = 200,
+
+	AutoDropFruits = false,
+	DropFruitSeedFilter = {},               -- {} = all; else names e.g. {"Carrot"}
+	DropFruitMutationFilter = {},           -- {} = all; "None"=unmutated; e.g. {"Gold","Rainbow"}
+	DropFruitMinValue = 0,                  -- only drop fruit worth >= this ($)
+	DropFruitPerCycle = 3,
+	DropFruitDelay = 0.15,
+
+	AutoEquipPets = false,
+	EquipMode = "Name",                     -- "Name" | "Rarity"
+	EquipTypes = {},                        -- EquipMode="Name"; {} = all; else names e.g. {"Cat","Dog"}
+	EquipRarity = {},                       -- EquipMode="Rarity"; {} = all; else e.g. {"Legendary","Mythical"}
+
+	AutoBuyPet = false,
+	PetBuyMode = "Name",                    -- "Name" | "Rarity"
+	PetBuyTypes = {"Unicorn", "GoldenDragonfly", "Raccoon", "Ice Serpant"},                         -- PetBuyMode="Name"; {} = all; else names e.g. {"Cat"}
+	PetBuyRarity = {"Super"},                      -- PetBuyMode="Rarity"; {} = all; else e.g. {"Legendary"}
+
+	DefendPet = false,
+	DefendTime = 12,                        -- seconds to defend
+	MaxSpendPerPet = 0,                     -- 0 = no cap; number, or "25k" / "1m"
+
+	AutoServerHopForPet = false,
+	HopDelay = 5,                           -- seconds between server hops
+
+	AutoSteal = false,
+	StealMinValue = 0,                      -- only steal fruit worth >= this ($)
+	StealHighestFirst = true,
+	StealMutations = {},                    -- {} = all; "None"=unmutated; e.g. {"Gold","Rainbow"}
+	StealTime = 0,                          -- steal-hold time, lower = faster
+	StealLoopDelay = 0.5,
+	StealCarryCap = 15,                     -- max carried before depositing
+	StealAntiHit = false,
+	StealCenterGarden = false,
+	SniperSilentAim = false,
+
+	AutoMail = true,
+	MailRecipient = "",                     -- "" = none; username or UserId
+	MailPetFilter = {"Unicorn", "GoldenDragonfly", "Raccoon", "Ice Serpant"},                     -- {} = NONE (sends nothing); else pet names e.g. {"Cat"}
+	MailSeedFilter = {"Dragon's Breath", "Moon Bloom", "Venom Spitter"},                    -- {} = NONE; else seed names e.g. {"Carrot"}
+	MailGearFilter = {"Super Watering Can", "Common Sprinkler", "Common Watering Can", "Uncommon Sprinkler", "Rare Sprinkler", "Legendary Sprinkler", "Super Sprinkler"},                    -- {} = NONE; else gear names e.g. {"Sprinkler"}
+	MailMaxItems = 20,                      -- 1..200
+
+	AutoClaimMail = false,
+
+	AutoGift = false,
+	GiftRecipient = "",                     -- "" = none; username or UserId
+	GiftPetFilter = {},                     -- {} = NONE (sends nothing); else pet names e.g. {"Cat"}
+	GiftSeedFilter = {},                    -- {} = NONE; else seed names e.g. {"Carrot"}
+	GiftGearFilter = {},                    -- {} = NONE; else gear names e.g. {"Sprinkler"}
+	GiftMaxItems = 20,
+
+	AutoAcceptGift = false,
+
+	AntiAFK = true,
+	AutoReconnect = true,
+	RejoinIfPingFrozen = true,             -- rejoin if ping freezes for ~20 min
+
+	Webhook = false,                        -- needs WebhookUrl; posts seed/gear/weather predictions + sheckles
+	WebhookUrl = "",                        -- "" = off; your Discord webhook URL
+	WebhookEverySeconds = 300,              -- interval between prediction posts (min 30)
+	WebhookOnPetBuy = false,
+	WebhookMention = "",                    -- "" = none; "<@userid>" or "<@&roleid>"
+	RestockAlert = false,
+	RestockWatch = {},                      -- {} = none; item names e.g. {"Carrot","Sprinkler"}
+
+	AutoTutorial = false,
+}
+
+--// CONFIG UI PANEL
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local LP = Players.LocalPlayer
+local PG = LP:WaitForChild("PlayerGui")
+local Settings = getgenv().Settings
+
+if PG:FindFirstChild("FarmConfigUI") then
+    PG.FarmConfigUI:Destroy()
+end
+
+local function tableToString(tbl)
+    if typeof(tbl) ~= "table" then return tostring(tbl) end
+    return table.concat(tbl, ", ")
+end
+
+local function parseInput(oldValue, text)
+    if typeof(oldValue) == "boolean" then
+        return text:lower() == "true"
+    elseif typeof(oldValue) == "number" then
+        return tonumber(text) or oldValue
+    elseif typeof(oldValue) == "table" then
+        if text == "" then
+            return {}
+        end
+        local split = string.split(text, ",")
+        for i,v in ipairs(split) do
+            split[i] = v:gsub("^%s*(.-)%s*$", "%1")
+        end
+        return split
+    else
+        return text
+    end
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "FarmConfigUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = PG
+
+-- OPEN BUTTON
+local openBtn = Instance.new("TextButton")
+openBtn.Size = UDim2.new(0.05,0,0.08,0)
+openBtn.Position = UDim2.new(0.01,0,0.45,0)
+openBtn.Text = "⚙"
+openBtn.TextScaled = true
+openBtn.Font = Enum.Font.GothamBold
+openBtn.BackgroundColor3 = Color3.fromRGB(30,30,30)
+openBtn.TextColor3 = Color3.new(1,1,1)
+openBtn.Parent = gui
+Instance.new("UICorner", openBtn)
+
+-- MAIN FRAME
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0.3,0,0.7,0)
+main.Position = UDim2.new(0.07,0,0.15,0)
+main.BackgroundColor3 = Color3.fromRGB(20,20,20)
+main.Parent = gui
+Instance.new("UICorner", main)
+
+-- TOP BAR
+local top = Instance.new("Frame")
+top.Size = UDim2.new(1,0,0.08,0)
+top.BackgroundColor3 = Color3.fromRGB(35,35,35)
+top.Parent = main
+Instance.new("UICorner", top)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(0.8,0,1,0)
+title.Position = UDim2.new(0.03,0,0,0)
+title.BackgroundTransparency = 1
+title.Text = "Farm Config Panel"
+title.TextScaled = true
+title.Font = Enum.Font.GothamBold
+title.TextColor3 = Color3.new(1,1,1)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = top
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0.08,0,0.65,0)
+closeBtn.Position = UDim2.new(0.9,0,0.18,0)
+closeBtn.Text = "X"
+closeBtn.TextScaled = true
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.BackgroundColor3 = Color3.fromRGB(170,50,50)
+closeBtn.TextColor3 = Color3.new(1,1,1)
+closeBtn.Parent = top
+Instance.new("UICorner", closeBtn)
+
+-- SCROLL
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size = UDim2.new(1,-10,0.9,-10)
+scroll.Position = UDim2.new(0,5,0.09,5)
+scroll.BackgroundTransparency = 1
+scroll.BorderSizePixel = 0
+scroll.ScrollBarThickness = 4
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.Parent = main
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0,5)
+layout.Parent = scroll
+
+local function createToggle(name)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1,0,0,45)
+    row.BackgroundColor3 = Color3.fromRGB(40,40,40)
+    row.Parent = scroll
+    Instance.new("UICorner", row)
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.6,0,1,0)
+    label.Position = UDim2.new(0.03,0,0,0)
+    label.BackgroundTransparency = 1
+    label.Text = name
+    label.TextScaled = true
+    label.TextColor3 = Color3.new(1,1,1)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = row
+
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(0.25,0,0.65,0)
+    button.Position = UDim2.new(0.72,0,0.17,0)
+    button.Parent = row
+    Instance.new("UICorner", button)
+
+    local function update()
+        local state = Settings[name]
+        button.Text = state and "ON" or "OFF"
+        button.BackgroundColor3 = state and Color3.fromRGB(40,140,40) or Color3.fromRGB(140,40,40)
+    end
+
+    button.MouseButton1Click:Connect(function()
+        Settings[name] = not Settings[name]
+        update()
+    end)
+
+    update()
+end
+
+local function createInput(name)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1,0,0,45)
+    row.BackgroundColor3 = Color3.fromRGB(40,40,40)
+    row.Parent = scroll
+    Instance.new("UICorner", row)
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.35,0,1,0)
+    label.Position = UDim2.new(0.03,0,0,0)
+    label.BackgroundTransparency = 1
+    label.Text = name
+    label.TextScaled = true
+    label.TextColor3 = Color3.new(1,1,1)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = row
+
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(0.55,0,0.65,0)
+    box.Position = UDim2.new(0.42,0,0.17,0)
+    box.Text = tableToString(Settings[name])
+    box.TextScaled = true
+    box.Font = Enum.Font.Gotham
+    box.BackgroundColor3 = Color3.fromRGB(55,55,55)
+    box.TextColor3 = Color3.new(1,1,1)
+    box.Parent = row
+    Instance.new("UICorner", box)
+
+    box.FocusLost:Connect(function()
+        Settings[name] = parseInput(Settings[name], box.Text)
+    end)
+end
+
+-- TOGGLES
+createToggle("AutoHarvest")
+createToggle("AutoPlant")
+createToggle("AutoWater")
+createToggle("SellWhenBagFull")
+createToggle("AutoSteal")
+createToggle("AutoMail")
+createToggle("AutoDoubleOrNothing")
+
+-- INPUTS
+createInput("LoopDelay")
+createInput("MoveSpeed")
+createInput("MailRecipient")
+createInput("AutoBuySeeds")
+createInput("AutoBuyGear")
+createInput("AutoBuyCrates")
+createInput("PetBuyTypes")
+
+-- OPEN/CLOSE
+closeBtn.MouseButton1Click:Connect(function()
+    main.Visible = false
+end)
+
+openBtn.MouseButton1Click:Connect(function()
+    main.Visible = not main.Visible
+end)
+
+-- DRAGGING
+local dragging = false
+local dragStart
+local startPos
+
+top.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+    end
+end)
+
+top.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+UIS.InputChanged:Connect(function(input)
+    if dragging and (
+        input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+    ) then
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+loadstring(game:HttpGet("https://api.luarmor.net/files/v4/loaders/ebd3b9f8d06cde6ab1350433ee4d09df.lua"))()
