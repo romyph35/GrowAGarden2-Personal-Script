@@ -22,7 +22,7 @@ getgenv().Settings = {
 	AutoDoubleOrNothing = false,            -- only works while standing AT Steven (no auto-nav)
 	DoNCashOutWins = 1,                     -- cash out after this many wins
 
-	AutoBuySeeds = {"Dragon's Breath", "Moon Bloom", "Venom Spitter"},                      -- {} = none; else names e.g. {"Carrot","Strawberry"}
+	AutoBuySeeds = {"Dragon's Breath", "Moon Bloom", "Venom Spitter", "Hypno Bloom"},                      -- {} = none; else names e.g. {"Carrot","Strawberry"}
 	AutoBuyAllSeeds = false,
 	AutoBuyGear = {"Super Watering Can", "Common Sprinkler", "Common Watering Can", "Uncommon Sprinkler", "Rare Sprinkler", "Legendary Sprinkler", "Super Sprinkler"},                       -- {} = none; else names e.g. {"Sprinkler","Watering Can"}
 	AutoBuyAllGear = false,
