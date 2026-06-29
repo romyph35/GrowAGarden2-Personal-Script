@@ -1,0 +1,1801 @@
+-- Auctioneer Auto-Buy for Xeno (https://getxeno.site/)
+-- Uses classic Lua syntax only (no if-expressions)
+
+local cloneref = cloneref or function(o) return o end
+local getgc_fn = getgc
+local getconnections_fn = getconnections
+local firesignal_fn = firesignal
+local debug_info = debug and debug.info
+local debug_getupvalue = debug and debug.getupvalue
+
+local Players = cloneref(game:GetService("Players"))
+local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+local RunService = cloneref(game:GetService("RunService"))
+local TweenService = cloneref(game:GetService("TweenService"))
+local UserInputService = cloneref(game:GetService("UserInputService"))
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local PURCHASE_DEBOUNCE = 0.3
+local PURCHASE_COOLDOWN = 0.5
+
+local function fireGuiButton(button)
+	if not button or not button:IsA("GuiButton") then
+		return false
+	end
+	if not button.Visible or not button.Active then
+		return false
+	end
+
+	local fired = false
+	local function runConnection(conn)
+		if type(conn) ~= "table" then
+			return
+		end
+		if type(conn.Function) == "function" then
+			local ok = pcall(conn.Function)
+			if ok then
+				fired = true
+			end
+		end
+		if type(conn.Fire) == "function" then
+			local ok1 = pcall(function()
+				conn:Fire()
+			end)
+			if ok1 then
+				fired = true
+			end
+			local ok2 = pcall(conn.Fire, conn)
+			if ok2 then
+				fired = true
+			end
+		end
+	end
+
+	if typeof(getconnections_fn) == "function" then
+		local signals = { button.Activated, button.MouseButton1Click }
+		for si = 1, #signals do
+			local ok, connections = pcall(getconnections_fn, signals[si])
+			if ok and type(connections) == "table" then
+				for ci = 1, #connections do
+					runConnection(connections[ci])
+				end
+			end
+		end
+	end
+
+	if not fired and typeof(firesignal_fn) == "function" then
+		pcall(firesignal_fn, button.Activated)
+		pcall(firesignal_fn, button.MouseButton1Click)
+		fired = true
+	end
+
+	if not fired then
+		local ok = pcall(function()
+			button:Activate()
+		end)
+		if ok then
+			fired = true
+		end
+	end
+
+	return fired
+end
+
+local Auctioneer = {}
+function Auctioneer.CurrentPrice(lot, now)
+	if lot.decrementIntervalSeconds <= 0 then
+		return lot.startPrice
+	end
+	local elapsed = now - lot.rolledAt
+	if elapsed < 0 then
+		elapsed = 0
+	end
+	local ticks = math.floor(elapsed / lot.decrementIntervalSeconds)
+	local decrement = math.floor((lot.startPrice * lot.decrementPercent / 100) + 0.5)
+local price = lot.startPrice - decrement * ticks
+	if price < lot.minPrice then
+		price = lot.minPrice
+	end
+	return price
+end
+function Auctioneer.IsActive(lot, now, remainingStock)
+	if lot.expiresAt <= now then
+		return false
+	end
+	if remainingStock == nil then
+		return true
+	end
+	return remainingStock > 0
+end
+function Auctioneer.DisplayName(lot)
+	if lot.displayName and lot.displayName ~= "" then
+		return lot.displayName
+	end
+	local parts = {}
+	local fields = { lot.type, lot.size, lot.mutation, lot.item }
+	for fi = 1, #fields do
+		local part = fields[fi]
+		if part and part ~= "" then
+			table.insert(parts, part)
+		end
+	end
+	return table.concat(parts, " ")
+end
+
+local AuctioneerNet = nil
+local buyLotFn = nil
+local enabled = false
+local watchlist = {}
+local lots = {}
+local stock = {}
+local purchaseDebounce = {}
+local purchaseCooldownUntil = {}
+local statusMessage = "Starting..."
+local lastMatchedLot = nil
+local lastMatchedGuiLot = nil
+local lastMatchedEntry = nil
+local guiLotCount = 0
+local eventsBound = false
+
+-- forward declarations
+local buyViaGui
+local bindNetworkingEvents
+local requestSnapshotOnce
+
+local function serverNow()
+	local ok, t = pcall(function()
+		return workspace:GetServerTimeNow()
+	end)
+	if ok then
+		return t
+	end
+	return os.time()
+end
+
+local function parsePrice(text)
+	if typeof(text) ~= "string" then
+		return 0
+	end
+	text = text:gsub(",", ""):gsub("%s", "")
+	text = text:gsub("\194\162", ""):gsub("¢", ""):gsub("$", "")
+	text = text:upper()
+	local mult = { K = 1e3, M = 1e6, B = 1e9, T = 1e12 }
+	local num, suffix = text:match("([%d]+%.?[%d]*)([KMBT]?)")
+	if num then
+		return math.floor((tonumber(num) or 0) * (mult[suffix or ""] or 1))
+	end
+	return tonumber(text) or 0
+end
+
+local function formatPrice(price)
+	if price >= 1e12 then
+		return string.format("%.2fT", price / 1e12)
+	end
+	if price >= 1e9 then
+		return string.format("%.2fB", price / 1e9)
+	end
+	if price >= 1e6 then
+		return string.format("%.2fM", price / 1e6)
+	end
+	if price >= 1e3 then
+		return string.format("%.2fK", price / 1e3)
+	end
+	return tostring(math.floor(price))
+end
+
+local function normalizeName(name)
+	if typeof(name) ~= "string" then
+		return ""
+	end
+	return name:lower():gsub("%s+", " ")
+end
+
+local function hasFire(obj)
+	return type(obj) == "table" and type(rawget(obj, "Fire")) == "function"
+end
+
+local function isAuctioneerNetTable(t)
+	if type(t) ~= "table" then
+		return false
+	end
+	if not hasFire(rawget(t, "PurchaseLot")) then
+		return false
+	end
+	if not hasFire(rawget(t, "RequestSnapshot")) then
+		return false
+	end
+	if not hasFire(rawget(t, "Snapshot")) then
+		return false
+	end
+	return true
+end
+
+local function isFullNetworkingTable(t)
+	if type(t) ~= "table" then
+		return false
+	end
+	if not isAuctioneerNetTable(rawget(t, "Auctioneer")) then
+		return false
+	end
+	if type(rawget(t, "Garden")) ~= "table" then
+		return false
+	end
+	if type(rawget(t, "SeedShop")) ~= "table" then
+		return false
+	end
+	return true
+end
+
+local function findAuctioneerViaUpvalues()
+	if typeof(getgc_fn) ~= "function" or type(debug_getupvalue) ~= "function" then
+		return nil
+	end
+	local function scanFunction(obj)
+		for i = 1, 60 do
+			local ok, upname, val = pcall(debug_getupvalue, obj, i)
+			if not ok or upname == nil then
+				break
+			end
+			if upname == "Networking" and type(val) == "table" then
+				local auctioneer = rawget(val, "Auctioneer")
+				if isAuctioneerNetTable(auctioneer) then
+					return auctioneer
+				end
+			end
+		end
+		return nil
+	end
+	if type(debug_info) == "function" then
+		for _, obj in getgc_fn(true) do
+			if type(obj) == "function" then
+				local ok, name = pcall(debug_info, obj, "n")
+				if ok and (name == "buyLot" or name == "setup" or name == "applySnapshot") then
+					local found = scanFunction(obj)
+					if found then
+						return found
+					end
+				end
+			end
+		end
+	end
+	for _, obj in getgc_fn(true) do
+		if type(obj) == "function" then
+			local found = scanFunction(obj)
+			if found then
+				return found
+			end
+		end
+	end
+	return nil
+end
+
+local function findAuctioneerNetInMemory()
+	if typeof(getgc_fn) ~= "function" then
+		return nil
+	end
+	for _, obj in getgc_fn(true) do
+		if type(obj) == "table" then
+			if isFullNetworkingTable(obj) then
+				return rawget(obj, "Auctioneer")
+			end
+			local nested = rawget(obj, "Auctioneer")
+			if isAuctioneerNetTable(nested) then
+				return nested
+			end
+			if isAuctioneerNetTable(obj) then
+				return obj
+			end
+		end
+	end
+	return nil
+end
+
+local function findBuyLotFunction()
+	if buyLotFn then
+		return buyLotFn
+	end
+	if typeof(getgc_fn) ~= "function" or type(debug_info) ~= "function" then
+		return nil
+	end
+	for _, obj in getgc_fn(true) do
+		if type(obj) == "function" then
+			local ok, name = pcall(debug_info, obj, "n")
+			if ok and name == "buyLot" then
+				buyLotFn = obj
+				return obj
+			end
+		end
+	end
+	return nil
+end
+
+local function tryLoadFlagsFromMemory()
+	if typeof(getgc_fn) ~= "function" then
+		return
+	end
+	for _, obj in getgc_fn(true) do
+		if type(obj) == "table" then
+			local debounce = rawget(obj, "PurchaseDebounceSeconds")
+			local cooldown = rawget(obj, "PurchaseCooldownSeconds")
+			if type(debounce) == "table" and type(debounce.Get) == "function"
+				and type(cooldown) == "table" and type(cooldown.Get) == "function" then
+				local okD, d = pcall(function()
+					return debounce:Get()
+				end)
+				local okC, c = pcall(function()
+					return cooldown:Get()
+				end)
+				if okD and type(d) == "number" then
+					PURCHASE_DEBOUNCE = d
+				end
+				if okC and type(c) == "number" then
+					PURCHASE_COOLDOWN = c
+				end
+				return
+			end
+		end
+	end
+end
+
+local function initNetworking()
+	if AuctioneerNet then
+		return true
+	end
+	tryLoadFlagsFromMemory()
+	AuctioneerNet = findAuctioneerViaUpvalues()
+	if not AuctioneerNet then
+		AuctioneerNet = findAuctioneerNetInMemory()
+	end
+	if AuctioneerNet then
+		findBuyLotFunction()
+		return true
+	end
+	return false
+end
+
+local function getAuctionScrollingFrame()
+	local auction = PlayerGui:FindFirstChild("Auction")
+	if auction then
+		local frame = auction:FindFirstChild("Frame")
+		if frame then
+			local scrolling = frame:FindFirstChild("ScrollingFrame")
+			if scrolling then
+				return scrolling
+			end
+		end
+	end
+	for _, gui in ipairs(PlayerGui:GetChildren()) do
+		if gui:IsA("ScreenGui") and gui:FindFirstChild("Frame", true) then
+			for _, desc in ipairs(gui:GetDescendants()) do
+				if desc:IsA("ScrollingFrame") then
+					for _, child in ipairs(desc:GetChildren()) do
+						if child:IsA("GuiObject") and child.Name:sub(1, 4) == "Lot_" then
+							return desc
+						end
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function getAuctionGui()
+	local scrolling = getAuctionScrollingFrame()
+	if not scrolling then
+		return nil
+	end
+	return scrolling:FindFirstAncestorOfClass("ScreenGui"), scrolling
+end
+
+local function lotIdFromFrameName(name)
+	if typeof(name) ~= "string" then
+		return nil
+	end
+	if name:sub(1, 4) == "Lot_" then
+		return name:sub(5)
+	end
+	return nil
+end
+
+local function isLotFrame(obj)
+	if not obj or not obj:IsA("GuiObject") then
+		return false
+	end
+	return lotIdFromFrameName(obj.Name) ~= nil
+end
+
+local function getMainFrame(lotFrame)
+	if not lotFrame then
+		return nil
+	end
+	local direct = lotFrame:FindFirstChild("Main_Frame")
+if not direct then
+	for _, v in ipairs(lotFrame:GetDescendants()) do
+		if v.Name == "Main_Frame" then
+			direct = v
+			break
+		end
+	end
+end
+	if direct then
+		return direct
+	end
+	local inner = lotFrame:FindFirstChild("Frame")
+	if inner then
+		return inner:FindFirstChild("Main_Frame")
+	end
+	return nil
+end
+
+local function readLabelText(guiObject)
+	if not guiObject then
+		return ""
+	end
+	if (guiObject:IsA("TextLabel") or guiObject:IsA("TextButton")) and guiObject.Text ~= "" then
+		return guiObject.Text
+	end
+	for _, child in ipairs(guiObject:GetDescendants()) do
+		if (child:IsA("TextLabel") or child:IsA("TextButton")) and child.Text ~= "" then
+			return child.Text
+		end
+	end
+	return ""
+end
+
+local function isGuiLotAvailable(mainFrame)
+	if not mainFrame then
+		return false
+	end
+	local oos = mainFrame:FindFirstChild("OUT_OF_STOCK")
+	if oos and oos:IsA("GuiObject") and oos.Visible then
+		return false
+	end
+	local exp = mainFrame:FindFirstChild("EXPIRED")
+	if exp and exp:IsA("GuiObject") and exp.Visible then
+		return false
+	end
+	local buy = mainFrame:FindFirstChild("BuyButton")
+	if buy and buy:IsA("GuiButton") then
+		if not buy.Visible or not buy.Active then
+			return false
+		end
+		if buy.BackgroundTransparency >= 0.5 then
+			return false
+		end
+	end
+	return true
+end
+
+local function trim(s)
+	if typeof(s) ~= "string" then
+		return ""
+	end
+	return (s:match("^%s*(.-)%s*$"))
+end
+
+local function readBuyPrice(buyButton)
+	if not buyButton then
+		return "", 0
+	end
+	local textObj = buyButton:FindFirstChild("Text")
+	local priceText = readLabelText(textObj or buyButton)
+	if priceText == "" then
+		priceText = readLabelText(buyButton)
+	end
+	return priceText, parsePrice(priceText)
+end
+
+local function readItemName(mainFrame)
+	if not mainFrame then
+		return ""
+	end
+	local itemNameObj = mainFrame:FindFirstChild("ItemName")
+	local name = trim(readLabelText(itemNameObj))
+	if name ~= "" then
+		return name
+	end
+	local imageDisplay = mainFrame:FindFirstChild("ImageDisplay") or mainFrame
+	local tip = imageDisplay:GetAttribute("ItemToolTip")
+	if typeof(tip) == "string" and tip ~= "" then
+		return trim(tip)
+	end
+	return ""
+end
+
+local function parseGuiLotFrame(lotFrame)
+	local lotId = lotIdFromFrameName(lotFrame.Name)
+	local mainFrame = getMainFrame(lotFrame)
+	if not lotId or not mainFrame then
+		return nil
+	end
+	local buyButton = mainFrame:FindFirstChild("BuyButton")
+	local priceText, price = readBuyPrice(buyButton)
+	return {
+		lotId = lotId,
+		lotFrame = lotFrame,
+		mainFrame = mainFrame,
+		itemName = readItemName(mainFrame),
+		price = price,
+		priceText = priceText,
+		buyButton = buyButton,
+		available = isGuiLotAvailable(mainFrame),
+	}
+end
+
+local function scanGuiLots()
+	local scrolling = getAuctionScrollingFrame()
+	if not scrolling then
+		guiLotCount = 0
+		return {}
+	end
+	local results = {}
+	local seen = {}
+	for _, child in ipairs(scrolling:GetChildren()) do
+		if isLotFrame(child) then
+			local guiLot = parseGuiLotFrame(child)
+			if guiLot and not seen[guiLot.lotId] then
+				seen[guiLot.lotId] = true
+				table.insert(results, guiLot)
+			end
+		end
+	end
+	if #results == 0 then
+		for _, desc in ipairs(scrolling:GetDescendants()) do
+			if isLotFrame(desc) and not seen[lotIdFromFrameName(desc.Name)] then
+				local guiLot = parseGuiLotFrame(desc)
+				if guiLot then
+					seen[guiLot.lotId] = true
+					table.insert(results, guiLot)
+				end
+			end
+		end
+	end
+	guiLotCount = #results
+	return results
+end
+
+local function nameMatches(displayName, query)
+	if query == "" or displayName == "" then
+		return false
+	end
+	local q = normalizeName(query)
+	local n = normalizeName(displayName)
+	if n == q then
+		return true
+	end
+	if n:find(q, 1, true) ~= nil then
+		return true
+	end
+	if q:find(n, 1, true) ~= nil then
+		return true
+	end
+	return false
+end
+
+local function canPurchaseLot(lotId)
+	local clock = os.clock()
+	if purchaseDebounce[lotId] and clock - purchaseDebounce[lotId] < PURCHASE_DEBOUNCE then
+		return false
+	end
+	if clock < (purchaseCooldownUntil[lotId] or 0) then
+		return false
+	end
+	return true
+end
+
+local function isLotDataTable(t)
+	if type(t) ~= "table" then
+		return false
+	end
+	if typeof(rawget(t, "lotId")) ~= "string" then
+		return false
+	end
+	if type(rawget(t, "startPrice")) ~= "number" then
+		return false
+	end
+	if type(rawget(t, "rolledAt")) ~= "number" then
+		return false
+	end
+	return true
+end
+
+local function findLotDataInMemory(lotId)
+	if typeof(getgc_fn) ~= "function" or lotId == "" then
+		return nil
+	end
+	for _, obj in getgc_fn(true) do
+		if isLotDataTable(obj) and rawget(obj, "lotId") == lotId then
+			return obj
+		end
+	end
+	return nil
+end
+
+local function findLotData(lotId)
+	for i = 1, #lots do
+		if lots[i].lotId == lotId then
+			return lots[i]
+		end
+	end
+	return findLotDataInMemory(lotId)
+end
+
+local function getWatchlistMatch(displayName)
+	for i = 1, #watchlist do
+		local entry = watchlist[i]
+		if nameMatches(displayName, entry.name) then
+			return entry
+		end
+	end
+	return nil
+end
+
+local function resolvePurchasePrice(lot, guiLot)
+	local now = serverNow()
+	if lot then
+		return Auctioneer.CurrentPrice(lot, now)
+	end
+	if guiLot then
+		if guiLot.price > 0 then
+			return guiLot.price
+		end
+		return parsePrice(guiLot.priceText)
+	end
+	return 0
+end
+
+local function syncLotsFromMemory()
+	if #lots > 0 then
+		return
+	end
+	if typeof(getgc_fn) ~= "function" then
+		return
+	end
+	for _, obj in getgc_fn(true) do
+		if type(obj) == "table" and #obj >= 1 and #obj <= 30 then
+			local allLots = true
+			for i = 1, #obj do
+				if not isLotDataTable(obj[i]) then
+					allLots = false
+					break
+				end
+			end
+			if allLots then
+				lots = {}
+				for i = 1, #obj do
+					table.insert(lots, obj[i])
+				end
+				return
+			end
+		end
+	end
+end
+
+local function buyLotDirect(lotData)
+	if not lotData or not isLotDataTable(lotData) then
+		return false
+	end
+	local fn = findBuyLotFunction()
+	if not fn then
+		return false
+	end
+	if not canPurchaseLot(lotData.lotId) then
+		return false
+	end
+	local ok, err = pcall(fn, lotData)
+	if not ok then
+		statusMessage = "buyLot call failed: " .. tostring(err)
+		return false
+	end
+	statusMessage = "Buying " .. Auctioneer.DisplayName(lotData) .. " (direct)"
+	return true
+end
+
+local function buyLotRemote(lot, price)
+	local lotId = lot.lotId
+	if not canPurchaseLot(lotId) then
+		return false
+	end
+	if not AuctioneerNet or not AuctioneerNet.PurchaseLot then
+		return false
+	end
+	local clock = os.clock()
+	purchaseDebounce[lotId] = clock
+	local ok, err = pcall(function()
+		AuctioneerNet.PurchaseLot:Fire(lotId, price)
+	end)
+	if not ok then
+		purchaseDebounce[lotId] = nil
+		statusMessage = "Packet buy failed: " .. tostring(err)
+		return false
+	end
+	if PURCHASE_COOLDOWN > 0 then
+		purchaseCooldownUntil[lotId] = clock + PURCHASE_COOLDOWN
+	end
+	local label = Auctioneer.DisplayName(lot)
+	if label == "" then
+		label = lotId
+	end
+	statusMessage = "Buying " .. label .. " @ " .. formatPrice(price)
+	return true
+end
+
+local function buyGuiLot(guiLot)
+	if not guiLot or not canPurchaseLot(guiLot.lotId) or not isGuiLotAvailable(guiLot.mainFrame) then
+		return false
+	end
+	syncLotsFromMemory()
+	local lotData = findLotData(guiLot.lotId)
+	local price = resolvePurchasePrice(lotData, guiLot)
+	if price <= 0 then
+		statusMessage = "Could not read price for " .. guiLot.itemName
+		return false
+	end
+	local entry = getWatchlistMatch(guiLot.itemName)
+	if entry and price > entry.maxPrice then
+		return false
+	end
+	if lotData and buyLotDirect(lotData) then
+		return true
+	end
+	if AuctioneerNet then
+		local lotForRemote = lotData or { lotId = guiLot.lotId, item = guiLot.itemName }
+		return buyLotRemote(lotForRemote, price)
+	end
+	return buyViaGui(guiLot)
+end
+
+buyViaGui = function(guiLot)
+	if not guiLot or not canPurchaseLot(guiLot.lotId) or not isGuiLotAvailable(guiLot.mainFrame) then
+		return false
+	end
+	local clock = os.clock()
+	purchaseDebounce[guiLot.lotId] = clock
+	local ok, err = pcall(function()
+		if not fireGuiButton(guiLot.buyButton) then
+			error("BuyButton fire failed")
+		end
+	end)
+	if not ok then
+		purchaseDebounce[guiLot.lotId] = nil
+		statusMessage = "GUI buy failed: " .. tostring(err)
+		return false
+	end
+	if PURCHASE_COOLDOWN > 0 then
+		purchaseCooldownUntil[guiLot.lotId] = clock + PURCHASE_COOLDOWN
+	end
+	statusMessage = "Buying " .. guiLot.itemName .. " @ " .. guiLot.priceText .. " (UI)"
+	return true
+end
+
+local function applySnapshot(payload)
+	if typeof(payload) ~= "table" then
+		return
+	end
+	lots = {}
+	local manifest = payload.manifest
+	if typeof(manifest) == "table" and typeof(manifest.lots) == "table" then
+		for _, lot in pairs(manifest.lots) do
+			if typeof(lot) == "table" and typeof(lot.lotId) == "string" then
+				table.insert(lots, lot)
+			end
+		end
+	end
+	if typeof(payload.stock) == "table" then
+		stock = payload.stock
+	end
+end
+
+local function applyStockUpdate(payload)
+	if typeof(payload) == "table" and typeof(payload.stock) == "table" then
+		stock = payload.stock
+	end
+end
+
+local function findWatchlistEntryIndex(name)
+	local n = normalizeName(name)
+	for i = 1, #watchlist do
+		if normalizeName(watchlist[i].name) == n then
+			return i
+		end
+	end
+	return nil
+end
+
+local function addWatchlistItem(name, maxPrice)
+	name = name:match("^%s*(.-)%s*$")
+	if name == "" or maxPrice <= 0 then
+		statusMessage = "Enter item name and max price first"
+		return false
+	end
+	local existing = findWatchlistEntryIndex(name)
+	if existing then
+		watchlist[existing].maxPrice = maxPrice
+		statusMessage = "Updated " .. name .. " <= " .. formatPrice(maxPrice)
+	else
+		table.insert(watchlist, { name = name, maxPrice = maxPrice })
+		statusMessage = "Added " .. name .. " <= " .. formatPrice(maxPrice)
+	end
+	return true
+end
+
+local function removeWatchlistItem(index)
+	if watchlist[index] then
+		local removed = watchlist[index].name
+		table.remove(watchlist, index)
+		statusMessage = "Removed " .. removed
+	end
+end
+
+local function isLotPurchasable(lot, now)
+	local remaining = stock[lot.lotId]
+	if not Auctioneer.IsActive(lot, now, remaining) then
+		return false
+	end
+	if lot.stockQuantity ~= nil and remaining ~= nil and remaining <= 0 then
+		return false
+	end
+	return lot.expiresAt > now
+end
+
+local function findBestSnapshotLot()
+	local now = serverNow()
+	local bestLot = nil
+	local bestPrice = math.huge
+	local bestEntry = nil
+	for _, lot in ipairs(lots) do
+		if isLotPurchasable(lot, now) then
+			local entry = getWatchlistMatch(lot.item or "")
+			if not entry then
+				entry = getWatchlistMatch(Auctioneer.DisplayName(lot))
+			end
+			if entry then
+				local price = Auctioneer.CurrentPrice(lot, now)
+				if price <= entry.maxPrice and price < bestPrice then
+					bestLot = lot
+					bestPrice = price
+					bestEntry = entry
+				end
+			end
+		end
+	end
+	return bestLot, bestPrice, bestEntry
+end
+
+local function findBestGuiLot()
+	local best = nil
+	local bestPrice = math.huge
+	local bestEntry = nil
+	for _, guiLot in ipairs(scanGuiLots()) do
+		if guiLot.available and guiLot.itemName ~= "" then
+			local entry = getWatchlistMatch(guiLot.itemName)
+			if entry then
+				local lotData = findLotData(guiLot.lotId)
+				local price = resolvePurchasePrice(lotData, guiLot)
+				if price > 0 and price <= entry.maxPrice and price < bestPrice then
+					best = guiLot
+					best.price = price
+					if lotData then
+						best.lotData = lotData
+					end
+					bestPrice = price
+					bestEntry = entry
+				end
+			end
+		end
+	end
+	return best, bestPrice, bestEntry
+end
+
+local lastAutoBuyTick = 0
+local AUTO_BUY_INTERVAL = 0.2
+
+local function tickAutoBuy()
+	if not enabled or #watchlist == 0 then
+		return
+	end
+	local clock = os.clock()
+	if clock - lastAutoBuyTick < AUTO_BUY_INTERVAL then
+		return
+	end
+	lastAutoBuyTick = clock
+	if not AuctioneerNet then
+		initNetworking()
+		if AuctioneerNet then
+			bindNetworkingEvents()
+			requestSnapshotOnce()
+		end
+	end
+	syncLotsFromMemory()
+	local lot, price, entry = findBestSnapshotLot()
+	lastMatchedLot = lot
+	lastMatchedGuiLot = nil
+	lastMatchedEntry = entry
+	if lot and price then
+		buyLotRemote(lot, price)
+		return
+	end
+	local guiLot, _, guiEntry = findBestGuiLot()
+	lastMatchedGuiLot = guiLot
+	lastMatchedEntry = guiEntry
+	if guiLot then
+		if not buyGuiLot(guiLot) and guiLot.buyButton then
+			buyViaGui(guiLot)
+		end
+		return
+	end
+	local hint = ""
+	if guiLotCount > 0 and #watchlist > 0 then
+		local sample = scanGuiLots()[1]
+		if sample then
+			hint = " | e.g. UI: " .. sample.itemName .. " @ " .. sample.priceText
+		end
+	end
+	statusMessage = "Watching " .. tostring(#watchlist) .. " items (" .. tostring(guiLotCount) .. " UI lots)" .. hint
+end
+
+bindNetworkingEvents = function()
+	if eventsBound or not AuctioneerNet then
+		return
+	end
+	eventsBound = true
+	if AuctioneerNet.Snapshot and AuctioneerNet.Snapshot.OnClientEvent then
+		AuctioneerNet.Snapshot.OnClientEvent:Connect(applySnapshot)
+	end
+	if AuctioneerNet.StockUpdate and AuctioneerNet.StockUpdate.OnClientEvent then
+		AuctioneerNet.StockUpdate.OnClientEvent:Connect(applyStockUpdate)
+	end
+	if AuctioneerNet.PurchaseResult and AuctioneerNet.PurchaseResult.OnClientEvent then
+		AuctioneerNet.PurchaseResult.OnClientEvent:Connect(function(lotId, success)
+			purchaseDebounce[lotId] = nil
+			if success then
+				statusMessage = "Purchased " .. tostring(lotId) .. "!"
+			else
+				statusMessage = "Rejected " .. tostring(lotId)
+				purchaseCooldownUntil[lotId] = nil
+			end
+		end)
+	end
+end
+
+requestSnapshotOnce = function()
+	if not AuctioneerNet or not AuctioneerNet.RequestSnapshot then
+		return
+	end
+	local ok, result = pcall(function()
+		return AuctioneerNet.RequestSnapshot:Fire()
+	end)
+	if ok and result then
+		applySnapshot(result)
+	end
+end
+
+task.spawn(function()
+	for i = 1, 60 do
+		if initNetworking() then
+			bindNetworkingEvents()
+			requestSnapshotOnce()
+			statusMessage = "Ready (packet net found)"
+			return
+		end
+		task.wait(1)
+	end
+	statusMessage = "Waiting for game net... open Auction UI first"
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(5)
+		if not AuctioneerNet then
+			if initNetworking() then
+				bindNetworkingEvents()
+				requestSnapshotOnce()
+				statusMessage = "Ready (packet net found)"
+			end
+		elseif AuctioneerNet then
+			requestSnapshotOnce()
+		end
+	end
+end)
+
+RunService.Heartbeat:Connect(tickAutoBuy)
+
+-- =============================================================================
+-- UI (responsive, collapse/expand, force close)
+-- =============================================================================
+
+local old = PlayerGui:FindFirstChild("AuctioneerAutoBuy")
+if old then
+	old:Destroy()
+end
+
+local function getViewport()
+	local cam = workspace.CurrentCamera
+	if cam then
+		return cam.ViewportSize
+	end
+	return Vector2.new(1280, 720)
+end
+
+local function isMobileLayout()
+	if UserInputService.TouchEnabled and not UserInputService.MouseEnabled then
+		return true
+	end
+	local vp = getViewport()
+	return vp.X < 600 or vp.Y < 500
+end
+
+local function computeUiScale()
+	local vp = getViewport()
+	local base = 380
+	local scale = vp.X / base
+	if isMobileLayout() then
+		scale = math.min(vp.X / 360, vp.Y / 680)
+	end
+	return math.clamp(scale, 0.72, 1.15)
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "AuctioneerAutoBuy"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.IgnoreGuiInset = false
+ScreenGui.DisplayOrder = 100
+ScreenGui.Parent = PlayerGui
+
+local Root = Instance.new("Frame")
+Root.Name = "Root"
+Root.BackgroundTransparency = 1
+Root.Size = UDim2.new(1, 0, 1, 0)
+Root.Parent = ScreenGui
+
+local UiScale = Instance.new("UIScale")
+UiScale.Parent = Root
+
+local function applyResponsiveScale()
+	UiScale.Scale = computeUiScale()
+end
+applyResponsiveScale()
+if workspace.CurrentCamera then
+	workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(applyResponsiveScale)
+end
+local C = {
+	panel = Color3.fromRGB(24, 26, 34),
+	panel2 = Color3.fromRGB(32, 35, 48),
+	bg = Color3.fromRGB(16, 17, 24),
+	border = Color3.fromRGB(62, 68, 92),
+	accent = Color3.fromRGB(96, 165, 250),
+	accentDim = Color3.fromRGB(59, 110, 180),
+	success = Color3.fromRGB(52, 211, 153),
+	danger = Color3.fromRGB(248, 113, 113),
+	dangerDim = Color3.fromRGB(120, 45, 45),
+	text = Color3.fromRGB(241, 245, 249),
+	textDim = Color3.fromRGB(148, 163, 184),
+	input = Color3.fromRGB(20, 22, 30),
+	headerTop = Color3.fromRGB(36, 40, 56),
+	headerBot = Color3.fromRGB(26, 28, 38),
+}
+
+local uiExpanded = true
+local PANEL_W = 360
+local PANEL_H_EXPANDED = 520
+local PANEL_H_COLLAPSED = 52
+
+local function corner(p, r)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, r or 8)
+	c.Parent = p
+end
+
+local function stroke(p, color, t)
+	local s = Instance.new("UIStroke")
+	s.Color = color or C.border
+	s.Thickness = t or 1
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	s.Parent = p
+	return s
+end
+
+local function headerBtn(text, color, w)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(0, w or 36, 0, 36)
+	b.BackgroundColor3 = color or C.panel2
+	b.AutoButtonColor = true
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 16
+	b.TextColor3 = C.text
+	b.Text = text
+	corner(b, 8)
+	return b
+end
+
+local Main = Instance.new("Frame")
+Main.Name = "MainPanel"
+Main.AnchorPoint = Vector2.new(0.5, 0.5)
+Main.Size = UDim2.new(0, PANEL_W, 0, PANEL_H_EXPANDED)
+Main.Position = UDim2.new(0.5, 0, 0.5, 0)
+Main.BackgroundColor3 = C.panel
+Main.ClipsDescendants = true
+Main.Parent = Root
+corner(Main, 14)
+stroke(Main, C.border, 1.5)
+
+local Shadow = Instance.new("ImageLabel")
+Shadow.Name = "Shadow"
+Shadow.BackgroundTransparency = 1
+Shadow.Image = "rbxassetid://5028857084"
+Shadow.ImageColor3 = Color3.new(0, 0, 0)
+Shadow.ImageTransparency = 0.55
+Shadow.ScaleType = Enum.ScaleType.Slice
+Shadow.SliceCenter = Rect.new(24, 24, 276, 276)
+Shadow.Size = UDim2.new(1, 28, 1, 28)
+Shadow.Position = UDim2.new(0, -14, 0, -10)
+Shadow.ZIndex = 0
+Shadow.Parent = Main
+
+local Header = Instance.new("Frame")
+Header.Name = "Header"
+Header.ZIndex = 2
+Header.Size = UDim2.new(1, 0, 0, PANEL_H_COLLAPSED)
+Header.BackgroundTransparency = 1
+Header.Parent = Main
+
+local HeaderBg = Instance.new("Frame")
+HeaderBg.Size = UDim2.new(1, 0, 1, 0)
+HeaderBg.BorderSizePixel = 0
+HeaderBg.Parent = Header
+corner(HeaderBg, 14)
+
+local HeaderGrad = Instance.new("UIGradient")
+HeaderGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, C.headerTop),
+	ColorSequenceKeypoint.new(1, C.headerBot),
+})
+HeaderGrad.Rotation = 90
+HeaderGrad.Parent = HeaderBg
+
+local AccentBar = Instance.new("Frame")
+AccentBar.Size = UDim2.new(1, 0, 0, 3)
+AccentBar.BorderSizePixel = 0
+AccentBar.BackgroundColor3 = C.accent
+AccentBar.Parent = Header
+
+local TitleWrap = Instance.new("Frame")
+TitleWrap.BackgroundTransparency = 1
+TitleWrap.Position = UDim2.new(0, 14, 0, 8)
+TitleWrap.Size = UDim2.new(1, -130, 0, 36)
+TitleWrap.Parent = Header
+
+local StatusDot = Instance.new("Frame")
+StatusDot.Size = UDim2.new(0, 10, 0, 10)
+StatusDot.Position = UDim2.new(0, 0, 0.5, -5)
+StatusDot.BackgroundColor3 = C.textDim
+StatusDot.Parent = TitleWrap
+corner(StatusDot, 5)
+
+local Title = Instance.new("TextLabel")
+Title.BackgroundTransparency = 1
+Title.Position = UDim2.new(0, 16, 0, 0)
+Title.Size = UDim2.new(1, -16, 0, 20)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 15
+Title.TextColor3 = C.text
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Text = "Auction Auto-Buy"
+Title.Parent = TitleWrap
+
+local SubTitle = Instance.new("TextLabel")
+SubTitle.BackgroundTransparency = 1
+SubTitle.Position = UDim2.new(0, 16, 0, 20)
+SubTitle.Size = UDim2.new(1, -16, 0, 14)
+SubTitle.Font = Enum.Font.Gotham
+SubTitle.TextSize = 11
+SubTitle.TextColor3 = C.textDim
+SubTitle.TextXAlignment = Enum.TextXAlignment.Left
+SubTitle.Text = "Xeno | Multi-item watchlist"
+SubTitle.Parent = TitleWrap
+
+local HeaderBtns = Instance.new("Frame")
+HeaderBtns.BackgroundTransparency = 1
+HeaderBtns.Size = UDim2.new(0, 112, 0, 36)
+HeaderBtns.Position = UDim2.new(1, -118, 0, 8)
+HeaderBtns.Parent = Header
+
+local CollapseBtn = headerBtn("-", C.panel2, 34)
+CollapseBtn.Position = UDim2.new(0, 0, 0, 0)
+CollapseBtn.Parent = HeaderBtns
+
+local ForceCloseBtn = headerBtn("X", C.dangerDim, 34)
+ForceCloseBtn.Position = UDim2.new(0, 40, 0, 0)
+ForceCloseBtn.TextColor3 = C.danger
+ForceCloseBtn.Parent = HeaderBtns
+
+local MiniExpandBtn = headerBtn("+", C.accentDim, 34)
+MiniExpandBtn.Position = UDim2.new(0, 78, 0, 0)
+MiniExpandBtn.Visible = false
+MiniExpandBtn.Parent = HeaderBtns
+
+local Body = Instance.new("ScrollingFrame")
+Body.Name = "Body"
+Body.ZIndex = 2
+Body.BackgroundTransparency = 1
+Body.BorderSizePixel = 0
+Body.Position = UDim2.new(0, 0, 0, PANEL_H_COLLAPSED)
+Body.Size = UDim2.new(1, 0, 1, -PANEL_H_COLLAPSED)
+Body.ScrollBarThickness = 5
+Body.ScrollBarImageColor3 = C.accent
+Body.CanvasSize = UDim2.new(0, 0, 0, 0)
+Body.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Body.Parent = Main
+
+local BodyPad = Instance.new("Frame")
+BodyPad.Name = "BodyPad"
+BodyPad.BackgroundTransparency = 1
+BodyPad.Size = UDim2.new(1, -24, 0, 0)
+BodyPad.Position = UDim2.new(0, 12, 0, 0)
+BodyPad.AutomaticSize = Enum.AutomaticSize.Y
+BodyPad.Parent = Body
+
+local Layout = Instance.new("UIListLayout")
+Layout.Padding = UDim.new(0, 10)
+Layout.SortOrder = Enum.SortOrder.LayoutOrder
+Layout.Parent = BodyPad
+
+local BodyBottomPad = Instance.new("Frame")
+BodyBottomPad.BackgroundTransparency = 1
+BodyBottomPad.Size = UDim2.new(1, 0, 0, 8)
+BodyBottomPad.LayoutOrder = 99
+BodyBottomPad.Parent = BodyPad
+
+local dragging = false
+local dragStart = nil
+local startPos = nil
+
+local function clampMainToScreen()
+	local vp = getViewport()
+	local scale = UiScale.Scale
+	local w = Main.AbsoluteSize.X
+	local h = Main.AbsoluteSize.Y
+	local pos = Main.AbsolutePosition
+	local maxX = math.max(0, vp.X - w)
+	local maxY = math.max(0, vp.Y - h)
+	local x = math.clamp(pos.X, 0, maxX)
+	local y = math.clamp(pos.Y, 0, maxY)
+	if x ~= pos.X or y ~= pos.Y then
+		Main.Position = UDim2.new(0, x, 0, y)
+	end
+end
+
+local function setPanelExpanded(expanded, animate)
+	uiExpanded = expanded
+	Body.Visible = expanded
+	CollapseBtn.Visible = expanded
+	MiniExpandBtn.Visible = not expanded
+	if expanded then
+		CollapseBtn.Text = "-"
+		SubTitle.Text = "Xeno | Multi-item watchlist"
+	else
+		SubTitle.Text = (#watchlist > 0 and (tostring(#watchlist) .. " items") or "Collapsed") .. (enabled and " | ON" or " | OFF")
+	end
+	local targetH = expanded and PANEL_H_EXPANDED or PANEL_H_COLLAPSED
+	if animate then
+		TweenService:Create(Main, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+			Size = UDim2.new(0, PANEL_W, 0, targetH),
+		}):Play()
+	else
+		Main.Size = UDim2.new(0, PANEL_W, 0, targetH)
+	end
+end
+
+local function forceCloseUI()
+	pcall(function()
+		ScreenGui:Destroy()
+	end)
+end
+
+CollapseBtn.MouseButton1Click:Connect(function()
+	setPanelExpanded(not uiExpanded, true)
+end)
+
+MiniExpandBtn.MouseButton1Click:Connect(function()
+	setPanelExpanded(true, true)
+end)
+
+ForceCloseBtn.MouseButton1Click:Connect(function()
+	forceCloseUI()
+end)
+
+Header.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = Main.Position
+	end
+end)
+
+Header.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = false
+		clampMainToScreen()
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local d = input.Position - dragStart
+		Main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+	end
+end)
+
+local function label(text, order)
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Size = UDim2.new(1, 0, 0, 16)
+	l.Font = Enum.Font.GothamMedium
+	l.TextSize = 12
+	l.TextColor3 = C.textDim
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.Text = text
+	l.LayoutOrder = order
+	l.Parent = BodyPad
+	return l
+end
+
+local function inputBox(placeholder, order)
+	local b = Instance.new("TextBox")
+	b.BackgroundColor3 = C.input
+	b.Size = UDim2.new(1, 0, 0, 40)
+	b.Font = Enum.Font.Gotham
+	b.TextSize = 15
+	b.Text = ""
+	b.PlaceholderText = placeholder
+	b.PlaceholderColor3 = C.textDim
+	b.TextColor3 = C.text
+	b.ClearTextOnFocus = false
+	b.LayoutOrder = order
+	b.Parent = BodyPad
+	corner(b, 8)
+	stroke(b, C.border)
+	return b
+end
+
+local function actionBtn(text, bg, order, parent)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, 0, 0, 40)
+	b.BackgroundColor3 = bg
+	b.Font = Enum.Font.GothamMedium
+	b.TextSize = 14
+	b.TextColor3 = C.text
+	b.Text = text
+	b.LayoutOrder = order
+	b.AutoButtonColor = true
+	b.Parent = parent or BodyPad
+	corner(b, 8)
+	stroke(b, C.border)
+	return b
+end
+
+local ToggleCard = Instance.new("Frame")
+ToggleCard.LayoutOrder = 1
+ToggleCard.Size = UDim2.new(1, 0, 0, 52)
+ToggleCard.BackgroundColor3 = C.bg
+ToggleCard.Parent = BodyPad
+corner(ToggleCard, 10)
+stroke(ToggleCard, C.border)
+
+local ToggleLabel = Instance.new("TextLabel")
+ToggleLabel.BackgroundTransparency = 1
+ToggleLabel.Position = UDim2.new(0, 14, 0, 0)
+ToggleLabel.Size = UDim2.new(0.65, 0, 1, 0)
+ToggleLabel.Font = Enum.Font.GothamMedium
+ToggleLabel.TextSize = 14
+ToggleLabel.TextColor3 = C.text
+ToggleLabel.TextXAlignment = Enum.TextXAlignment.Left
+ToggleLabel.Text = "Auto-Buy Enabled"
+ToggleLabel.Parent = ToggleCard
+
+local ToggleTrack = Instance.new("TextButton")
+ToggleTrack.Size = UDim2.new(0, 56, 0, 30)
+ToggleTrack.Position = UDim2.new(1, -70, 0.5, -15)
+ToggleTrack.BackgroundColor3 = C.border
+ToggleTrack.Text = ""
+ToggleTrack.AutoButtonColor = false
+ToggleTrack.Parent = ToggleCard
+corner(ToggleTrack, 15)
+
+local ToggleKnob = Instance.new("Frame")
+ToggleKnob.Size = UDim2.new(0, 24, 0, 24)
+ToggleKnob.Position = UDim2.new(0, 3, 0.5, -12)
+ToggleKnob.BackgroundColor3 = C.text
+ToggleKnob.Parent = ToggleTrack
+corner(ToggleKnob, 12)
+
+local function setAutoBuyToggle(on)
+	enabled = on
+	local trackColor = C.border
+	local knobPos = UDim2.new(0, 3, 0.5, -12)
+	if on then
+		trackColor = C.success
+		knobPos = UDim2.new(1, -27, 0.5, -12)
+		StatusDot.BackgroundColor3 = C.success
+		if not AuctioneerNet then
+			task.spawn(function()
+				if initNetworking() then
+					bindNetworkingEvents()
+					requestSnapshotOnce()
+					statusMessage = "Ready (packet net found)"
+				end
+			end)
+		end
+	else
+		StatusDot.BackgroundColor3 = C.textDim
+	end
+	if not uiExpanded then
+		SubTitle.Text = (#watchlist > 0 and (tostring(#watchlist) .. " items") or "Collapsed") .. (enabled and " | ON" or " | OFF")
+	end
+	TweenService:Create(ToggleTrack, TweenInfo.new(0.2), { BackgroundColor3 = trackColor }):Play()
+	TweenService:Create(ToggleKnob, TweenInfo.new(0.2), { Position = knobPos }):Play()
+end
+
+ToggleTrack.MouseButton1Click:Connect(function()
+	setAutoBuyToggle(not enabled)
+end)
+
+label("Item Name", 2)
+local ItemInput = inputBox("e.g. Super Sprinkler, Moon Bloom", 3)
+label("Max Price for this item", 4)
+local PriceInput = inputBox("e.g. 100M, 200M, 1.5B", 5)
+
+local AddBtnRow = Instance.new("Frame")
+AddBtnRow.LayoutOrder = 6
+AddBtnRow.Size = UDim2.new(1, 0, 0, 40)
+AddBtnRow.BackgroundTransparency = 1
+AddBtnRow.Parent = BodyPad
+
+local AddRowLayout = Instance.new("UIListLayout")
+AddRowLayout.FillDirection = Enum.FillDirection.Horizontal
+AddRowLayout.Padding = UDim.new(0, 8)
+AddRowLayout.SortOrder = Enum.SortOrder.LayoutOrder
+AddRowLayout.Parent = AddBtnRow
+
+local AddItemBtn = Instance.new("TextButton")
+AddItemBtn.LayoutOrder = 1
+AddItemBtn.Size = UDim2.new(0.5, -4, 1, 0)
+AddItemBtn.BackgroundColor3 = C.success
+AddItemBtn.Font = Enum.Font.GothamMedium
+AddItemBtn.TextSize = 14
+AddItemBtn.TextColor3 = C.text
+AddItemBtn.Text = "+ Add Item"
+AddItemBtn.Parent = AddBtnRow
+corner(AddItemBtn, 8)
+
+local PickBtn = Instance.new("TextButton")
+PickBtn.LayoutOrder = 2
+PickBtn.Size = UDim2.new(0.5, -4, 1, 0)
+PickBtn.BackgroundColor3 = C.accentDim
+PickBtn.Font = Enum.Font.GothamMedium
+PickBtn.TextSize = 14
+PickBtn.TextColor3 = C.text
+PickBtn.Text = "Pick Auction"
+PickBtn.Parent = AddBtnRow
+corner(PickBtn, 8)
+
+label("Watchlist (separate max price per item)", 7)
+
+local WatchlistFrame = Instance.new("Frame")
+WatchlistFrame.LayoutOrder = 8
+WatchlistFrame.Size = UDim2.new(1, 0, 0, 120)
+WatchlistFrame.BackgroundColor3 = C.bg
+WatchlistFrame.Parent = BodyPad
+corner(WatchlistFrame, 10)
+stroke(WatchlistFrame, C.border)
+
+local WatchlistScroll = Instance.new("ScrollingFrame")
+WatchlistScroll.BackgroundTransparency = 1
+WatchlistScroll.Size = UDim2.new(1, -10, 1, -10)
+WatchlistScroll.Position = UDim2.new(0, 5, 0, 5)
+WatchlistScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+WatchlistScroll.ScrollBarThickness = 4
+WatchlistScroll.ScrollBarImageColor3 = C.accent
+WatchlistScroll.Parent = WatchlistFrame
+
+local WatchlistLayout = Instance.new("UIListLayout")
+WatchlistLayout.Padding = UDim.new(0, 6)
+WatchlistLayout.Parent = WatchlistScroll
+
+local function rebuildWatchlistUI()
+	for _, c in ipairs(WatchlistScroll:GetChildren()) do
+		if c:IsA("GuiObject") and not c:IsA("UIListLayout") then
+			c:Destroy()
+		end
+	end
+	if #watchlist == 0 then
+		local empty = Instance.new("TextLabel")
+		empty.BackgroundTransparency = 1
+		empty.Size = UDim2.new(1, 0, 0, 44)
+		empty.Font = Enum.Font.Gotham
+		empty.TextSize = 11
+		empty.TextWrapped = true
+		empty.TextColor3 = C.textDim
+		empty.Text = "No items yet. Example: Super Sprinkler + 100M, Moon Bloom + 200M"
+		empty.Parent = WatchlistScroll
+		WatchlistScroll.CanvasSize = UDim2.new(0, 0, 0, 48)
+		return
+	end
+	for i = 1, #watchlist do
+		local entry = watchlist[i]
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, -4, 0, 36)
+		row.BackgroundColor3 = C.input
+		row.LayoutOrder = i
+		row.Parent = WatchlistScroll
+		corner(row, 6)
+
+		local nameLbl = Instance.new("TextLabel")
+		nameLbl.BackgroundTransparency = 1
+		nameLbl.Position = UDim2.new(0, 10, 0, 0)
+		nameLbl.Size = UDim2.new(0.52, 0, 1, 0)
+		nameLbl.Font = Enum.Font.GothamMedium
+		nameLbl.TextSize = 12
+		nameLbl.TextColor3 = C.text
+		nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+		nameLbl.Text = entry.name
+		nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+		nameLbl.Parent = row
+
+		local priceLbl = Instance.new("TextLabel")
+		priceLbl.BackgroundTransparency = 1
+		priceLbl.Position = UDim2.new(0.52, 0, 0, 0)
+		priceLbl.Size = UDim2.new(0.3, 0, 1, 0)
+		priceLbl.Font = Enum.Font.Gotham
+		priceLbl.TextSize = 11
+		priceLbl.TextColor3 = C.accent
+		priceLbl.TextXAlignment = Enum.TextXAlignment.Right
+		priceLbl.Text = "<= " .. formatPrice(entry.maxPrice)
+		priceLbl.Parent = row
+
+		local removeBtn = Instance.new("TextButton")
+		removeBtn.Size = UDim2.new(0, 30, 0, 30)
+		removeBtn.Position = UDim2.new(1, -34, 0.5, -15)
+		removeBtn.BackgroundColor3 = C.dangerDim
+		removeBtn.Font = Enum.Font.GothamBold
+		removeBtn.TextSize = 14
+		removeBtn.TextColor3 = C.danger
+		removeBtn.Text = "x"
+		removeBtn.Parent = row
+		corner(removeBtn, 6)
+
+		local idx = i
+		removeBtn.MouseButton1Click:Connect(function()
+			removeWatchlistItem(idx)
+			rebuildWatchlistUI()
+		end)
+	end
+	WatchlistScroll.CanvasSize = UDim2.new(0, 0, 0, WatchlistLayout.AbsoluteContentSize.Y + 6)
+	if not uiExpanded then
+		SubTitle.Text = (#watchlist > 0 and (tostring(#watchlist) .. " items") or "Collapsed") .. (enabled and " | ON" or " | OFF")
+	end
+end
+
+WatchlistLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	WatchlistScroll.CanvasSize = UDim2.new(0, 0, 0, WatchlistLayout.AbsoluteContentSize.Y + 6)
+end)
+
+local function tryAddFromInputs()
+	local name = ItemInput.Text
+	local maxPrice = parsePrice(PriceInput.Text)
+	if addWatchlistItem(name, maxPrice) then
+		rebuildWatchlistUI()
+	end
+end
+
+AddItemBtn.MouseButton1Click:Connect(tryAddFromInputs)
+
+local Picker = Instance.new("Frame")
+Picker.LayoutOrder = 9
+Picker.Size = UDim2.new(1, 0, 0, 110)
+Picker.BackgroundColor3 = C.bg
+Picker.Visible = false
+Picker.Parent = BodyPad
+corner(Picker, 10)
+stroke(Picker, C.border)
+
+local PickerScroll = Instance.new("ScrollingFrame")
+PickerScroll.BackgroundTransparency = 1
+PickerScroll.Size = UDim2.new(1, -10, 1, -10)
+PickerScroll.Position = UDim2.new(0, 5, 0, 5)
+PickerScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+PickerScroll.ScrollBarThickness = 4
+PickerScroll.ScrollBarImageColor3 = C.accent
+PickerScroll.Parent = Picker
+
+local PickerLayout = Instance.new("UIListLayout")
+PickerLayout.Padding = UDim.new(0, 6)
+PickerLayout.Parent = PickerScroll
+
+local function rebuildPicker()
+	for _, c in ipairs(PickerScroll:GetChildren()) do
+		if c:IsA("GuiObject") and not c:IsA("UIListLayout") then
+			c:Destroy()
+		end
+	end
+	local guiLots = scanGuiLots()
+	if #guiLots == 0 then
+		local e = Instance.new("TextLabel")
+		e.BackgroundTransparency = 1
+		e.Size = UDim2.new(1, 0, 0, 44)
+		e.Font = Enum.Font.Gotham
+		e.TextSize = 11
+		e.TextWrapped = true
+		e.TextColor3 = C.textDim
+		e.Text = "Open Auction UI first (talk to Auctioneer)"
+		e.Parent = PickerScroll
+		PickerScroll.CanvasSize = UDim2.new(0, 0, 0, 48)
+		return
+	end
+	for i = 1, #guiLots do
+		local guiLot = guiLots[i]
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, -4, 0, 36)
+		row.BackgroundColor3 = C.input
+		row.LayoutOrder = i
+		row.Parent = PickerScroll
+		corner(row, 6)
+
+		local suffix = ""
+		if not guiLot.available then
+			suffix = " (sold out)"
+		end
+		local shownPrice = guiLot.priceText
+		if shownPrice == "" then
+			shownPrice = "?"
+		end
+
+		local infoBtn = Instance.new("TextButton")
+		infoBtn.BackgroundTransparency = 1
+		infoBtn.Size = UDim2.new(0.68, 0, 1, 0)
+		infoBtn.Font = Enum.Font.Gotham
+		infoBtn.TextSize = 11
+		infoBtn.TextXAlignment = Enum.TextXAlignment.Left
+		if guiLot.available then
+			infoBtn.TextColor3 = C.text
+		else
+			infoBtn.TextColor3 = C.textDim
+		end
+		infoBtn.Text = "  " .. guiLot.itemName .. "  -  " .. shownPrice .. suffix .. "  [" .. guiLot.lotId .. "]"
+		infoBtn.Parent = row
+
+		local addFromPick = Instance.new("TextButton")
+		addFromPick.Size = UDim2.new(0, 56, 0, 28)
+		addFromPick.Position = UDim2.new(1, -60, 0.5, -14)
+		addFromPick.BackgroundColor3 = C.success
+		addFromPick.Font = Enum.Font.GothamMedium
+		addFromPick.TextSize = 11
+		addFromPick.TextColor3 = C.text
+		addFromPick.Text = "Add"
+		addFromPick.Parent = row
+		corner(addFromPick, 6)
+
+		infoBtn.MouseButton1Click:Connect(function()
+			ItemInput.Text = guiLot.itemName
+			if guiLot.price > 0 then
+				PriceInput.Text = formatPrice(guiLot.price)
+			end
+		end)
+
+		addFromPick.MouseButton1Click:Connect(function()
+			ItemInput.Text = guiLot.itemName
+			local inputPrice = parsePrice(PriceInput.Text)
+			local usePrice = inputPrice
+			if usePrice <= 0 and guiLot.price > 0 then
+				usePrice = guiLot.price
+			end
+			if addWatchlistItem(guiLot.itemName, usePrice) then
+				rebuildWatchlistUI()
+			end
+		end)
+	end
+	PickerScroll.CanvasSize = UDim2.new(0, 0, 0, PickerLayout.AbsoluteContentSize.Y + 6)
+end
+
+PickBtn.MouseButton1Click:Connect(function()
+	Picker.Visible = not Picker.Visible
+	if Picker.Visible then
+		rebuildPicker()
+	end
+end)
+
+rebuildWatchlistUI()
+setPanelExpanded(true, false)
+
+local StatusBox = Instance.new("Frame")
+StatusBox.LayoutOrder = 10
+StatusBox.Size = UDim2.new(1, 0, 0, 58)
+StatusBox.BackgroundColor3 = C.bg
+StatusBox.Parent = BodyPad
+corner(StatusBox, 10)
+stroke(StatusBox, C.border)
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Position = UDim2.new(0, 12, 0, 8)
+StatusLabel.Size = UDim2.new(1, -24, 0, 18)
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.TextSize = 11
+StatusLabel.TextColor3 = C.textDim
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.Text = "Status: Starting..."
+StatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+StatusLabel.Parent = StatusBox
+
+local LiveLabel = Instance.new("TextLabel")
+LiveLabel.BackgroundTransparency = 1
+LiveLabel.Position = UDim2.new(0, 12, 0, 30)
+LiveLabel.Size = UDim2.new(1, -24, 0, 18)
+LiveLabel.Font = Enum.Font.Gotham
+LiveLabel.TextSize = 11
+LiveLabel.TextColor3 = C.text
+LiveLabel.TextXAlignment = Enum.TextXAlignment.Left
+LiveLabel.Text = "Live: --"
+LiveLabel.TextTruncate = Enum.TextTruncate.AtEnd
+LiveLabel.Parent = StatusBox
+
+local CountLabel = Instance.new("TextLabel")
+CountLabel.LayoutOrder = 11
+CountLabel.BackgroundTransparency = 1
+CountLabel.Size = UDim2.new(1, 0, 0, 16)
+CountLabel.Font = Enum.Font.Gotham
+CountLabel.TextSize = 10
+CountLabel.TextColor3 = C.textDim
+CountLabel.TextXAlignment = Enum.TextXAlignment.Left
+CountLabel.Text = "Watchlist: 0 | Snapshot: 0 | UI: 0"
+CountLabel.Parent = BodyPad
+
+local FooterHint = Instance.new("TextLabel")
+FooterHint.LayoutOrder = 12
+FooterHint.BackgroundTransparency = 1
+FooterHint.Size = UDim2.new(1, 0, 0, 28)
+FooterHint.Font = Enum.Font.Gotham
+FooterHint.TextSize = 10
+FooterHint.TextColor3 = C.textDim
+FooterHint.TextXAlignment = Enum.TextXAlignment.Center
+FooterHint.TextWrapped = true
+FooterHint.Text = "- collapse   X force close (re-run script to open again)"
+FooterHint.Parent = BodyPad
+
+task.spawn(function()
+	while ScreenGui.Parent do
+		scanGuiLots()
+		CountLabel.Text = "Watchlist: " .. tostring(#watchlist) .. " | Snapshot: " .. tostring(#lots) .. " | UI: " .. tostring(guiLotCount) .. " | Net: " .. tostring(AuctioneerNet ~= nil) .. " | buyLot: " .. tostring(buyLotFn ~= nil)
+		StatusLabel.Text = "Status: " .. statusMessage
+		if lastMatchedEntry then
+			local targetText = formatPrice(lastMatchedEntry.maxPrice)
+			if lastMatchedLot then
+				local p = Auctioneer.CurrentPrice(lastMatchedLot, serverNow())
+				LiveLabel.Text = "Live: " .. Auctioneer.DisplayName(lastMatchedLot) .. " @ " .. formatPrice(p) .. " (max " .. targetText .. ")"
+			elseif lastMatchedGuiLot then
+				LiveLabel.Text = "Live (UI): " .. lastMatchedGuiLot.itemName .. " @ " .. lastMatchedGuiLot.priceText .. " (max " .. targetText .. ")"
+			else
+				LiveLabel.Text = "Live: watching " .. lastMatchedEntry.name
+			end
+		else
+			LiveLabel.Text = "Live: no matching lot"
+		end
+		if not uiExpanded then
+			SubTitle.Text = (#watchlist > 0 and (tostring(#watchlist) .. " items") or "Collapsed") .. (enabled and " | ON" or " | OFF")
+		end
+		task.wait(0.25)
+	end
+end)
+
+if isMobileLayout() then
+	Main.AnchorPoint = Vector2.new(0.5, 1)
+	Main.Position = UDim2.new(0.5, 0, 1, -12)
+end
+
+print("[AuctioneerAutoBuy] Xeno loaded")
+print("[AuctioneerAutoBuy] getgc=" .. tostring(typeof(getgc_fn) == "function") .. " debug=" .. tostring(type(debug_getupvalue) == "function") .. " getconnections=" .. tostring(typeof(getconnections_fn) == "function"))
+print("[AuctioneerAutoBuy] Uses Packet net: Networking.Auctioneer.PurchaseLot:Fire(lotId, price)")
