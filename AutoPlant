@@ -1,7 +1,7 @@
 --[[ Garden Hub Auto Plant | RightShift to toggle ]]
 
 local SEED_NAME = "Carrot"
-local TARGET_SPRINKLER = "Legendary Sprinkler"
+local TARGET_SPRINKLER = "Super Sprinkler"
 local SPRINKLER_FOLDERS = {"Sprinklers", "Sprinkler"}
 local SPRINKLER_ATTR = "SprinklerName"
 local DEFAULT_RADIUS = 14
