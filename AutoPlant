@@ -785,31 +785,9 @@ floatingToggle.Selectable = true
 corner(floatingToggle, 8)
 stroke(floatingToggle, C.stroke)
 
--- Create persistent Open button (shows when panel is closed)
-local openBtn = Instance.new("TextButton")
-openBtn.Name = "OpenButton"
-openBtn.Size = UDim2.new(0, 100, 0, 45)
-openBtn.Position = UDim2.new(0.5, -50, 0.5, -22.5)
-openBtn.BackgroundColor3 = C.accent
-openBtn.Text = "OPEN"
-openBtn.Font = Enum.Font.GothamBold
-openBtn.TextSize = 14
-openBtn.TextColor3 = C.text
-openBtn.Parent = screenGui
-openBtn.Visible = false
-openBtn.Active = true
-openBtn.Selectable = true
-corner(openBtn, 8)
-stroke(openBtn, C.stroke)
-
 local function setVisible(state)
 	main.Visible = state
-	openBtn.Visible = not state
 end
-
-openBtn.MouseButton1Click:Connect(function()
-	setVisible(true)
-end)
 
 floatingToggle.MouseButton1Click:Connect(function()
 	setVisible(not main.Visible)
