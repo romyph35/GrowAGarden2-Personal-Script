@@ -1,0 +1,821 @@
+--[[ Garden Hub Auto Plant | RightShift to toggle ]]
+
+local SEED_NAME = "Carrot"
+local TARGET_SPRINKLER = "Super Sprinkler"
+local SPRINKLER_FOLDERS = {"Sprinklers", "Sprinkler"}
+local SPRINKLER_ATTR = "SprinklerName"
+local DEFAULT_RADIUS = 26
+local DEFAULT_DELAY = 0
+local MIN_PLANT_GAP = 1
+local GRID_STEP = 2
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local Gardens = workspace:WaitForChild("Gardens")
+
+local Networking = require(ReplicatedStorage:WaitForChild("SharedModules"):WaitForChild("Networking"))
+
+local PlantController
+pcall(function()
+	local controllers = LocalPlayer:WaitForChild("PlayerScripts"):WaitForChild("Controllers")
+	PlantController = require(controllers:WaitForChild("PlantController"))
+end)
+
+local C = {
+	bg = Color3.fromRGB(18, 20, 26),
+	panel = Color3.fromRGB(24, 27, 34),
+	field = Color3.fromRGB(32, 36, 46),
+	stroke = Color3.fromRGB(45, 52, 68),
+	accent = Color3.fromRGB(72, 180, 95),
+	accentDark = Color3.fromRGB(48, 140, 68),
+	danger = Color3.fromRGB(220, 80, 80),
+	text = Color3.fromRGB(235, 238, 245),
+	muted = Color3.fromRGB(140, 148, 165),
+}
+
+local userEnabled = false
+local plantDelay = DEFAULT_DELAY
+local plantRadius = DEFAULT_RADIUS
+local lastPlantClock = 0
+local plantedCount = 0
+local spotQueue = {}
+local anchorLabel = "none"
+local trackedSprinkler = nil
+local sprinklerWatchers = {}
+local rebuildSpotQueue
+
+local function isSprinklerFolderName(name)
+	for _, folderName in SPRINKLER_FOLDERS do
+		if name == folderName then
+			return true
+		end
+	end
+	return false
+end
+
+local function shuffleList(list)
+	for i = #list, 2, -1 do
+		local j = math.random(1, i)
+		list[i], list[j] = list[j], list[i]
+	end
+end
+
+local function takeRandomSpot()
+	if #spotQueue == 0 then
+		return nil
+	end
+	local idx = math.random(1, #spotQueue)
+	return table.remove(spotQueue, idx)
+end
+
+local function corner(parent, radius)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, radius or 8)
+	c.Parent = parent
+end
+
+local function stroke(parent, color)
+	local s = Instance.new("UIStroke")
+	s.Color = color or C.stroke
+	s.Thickness = 1
+	s.Parent = parent
+end
+
+local function pad(parent, t, r, b, l)
+	local p = Instance.new("UIPadding")
+	p.PaddingTop = UDim.new(0, t or 8)
+	p.PaddingRight = UDim.new(0, r or 8)
+	p.PaddingBottom = UDim.new(0, b or 8)
+	p.PaddingLeft = UDim.new(0, l or 8)
+	p.Parent = parent
+end
+
+local function getPlayerPlot()
+	local plotId = LocalPlayer:GetAttribute("PlotId")
+	if not plotId then return nil end
+	return Gardens:FindFirstChild("Plot" .. tostring(plotId))
+end
+
+local function getInstancePosition(inst)
+	if inst:IsA("BasePart") then return inst.Position end
+	if inst:IsA("Attachment") then return inst.WorldPosition end
+	if inst:IsA("Model") or inst:IsA("Folder") then
+		local root = inst:FindFirstChild("Root")
+		if root and root:IsA("BasePart") then return root.Position end
+		if inst.PrimaryPart then return inst.PrimaryPart.Position end
+		local part = inst:FindFirstChild("Part")
+		if part and part:IsA("BasePart") then return part.Position end
+		part = inst:FindFirstChildWhichIsA("BasePart", true)
+		if part then return part.Position end
+	end
+	return nil
+end
+
+local function normalizeText(text)
+	return string.lower(string.gsub(tostring(text), "[%s_%-]", ""))
+end
+
+local function isSuperSprinklerName(text)
+	return normalizeText(text) == normalizeText(TARGET_SPRINKLER)
+end
+
+local function getSprinklerName(inst)
+	local value = inst:GetAttribute(SPRINKLER_ATTR)
+	if value then return value end
+	for _, desc in inst:GetDescendants() do
+		value = desc:GetAttribute(SPRINKLER_ATTR)
+		if value then return value end
+	end
+	return nil
+end
+
+local function getSprinklerFolders(plot)
+	if not plot then return {} end
+	local folders = {}
+	for _, folderName in SPRINKLER_FOLDERS do
+		local folder = plot:FindFirstChild(folderName)
+		if folder then
+			table.insert(folders, folder)
+		end
+	end
+	return folders
+end
+
+local function findSuperSprinkler(plot)
+	for _, folder in getSprinklerFolders(plot) do
+		for _, sprinklerInst in folder:GetChildren() do
+			local sprinklerName = getSprinklerName(sprinklerInst)
+			if sprinklerName and isSuperSprinklerName(sprinklerName) then
+				local pos = getInstancePosition(sprinklerInst)
+				if pos then
+					return pos, tostring(sprinklerName), sprinklerInst
+				end
+			end
+		end
+	end
+	return nil, nil, nil
+end
+
+local function clearSprinklerWatchers()
+	for _, conn in sprinklerWatchers do
+		conn:Disconnect()
+	end
+	table.clear(sprinklerWatchers)
+end
+
+local function onSprinklerChanged()
+	if not userEnabled then return end
+
+	local plot = getPlayerPlot()
+	local pos, name, inst = findSuperSprinkler(plot)
+	if pos then
+		if trackedSprinkler ~= inst then
+			trackedSprinkler = inst
+			plantedCount = 0
+			rebuildSpotQueue()
+		else
+			rebuildSpotQueue()
+		end
+	else
+		trackedSprinkler = nil
+		table.clear(spotQueue)
+	end
+end
+
+local function hookSprinklerInstance(inst)
+	table.insert(sprinklerWatchers, inst:GetAttributeChangedSignal(SPRINKLER_ATTR):Connect(onSprinklerChanged))
+	table.insert(sprinklerWatchers, inst.AncestryChanged:Connect(onSprinklerChanged))
+	task.defer(onSprinklerChanged)
+end
+
+local function watchSprinklerFolder(plot)
+	clearSprinklerWatchers()
+	if not plot then return end
+
+	local folders = getSprinklerFolders(plot)
+	if #folders == 0 then
+		table.insert(sprinklerWatchers, plot.ChildAdded:Connect(function(child)
+			if isSprinklerFolderName(child.Name) then
+				watchSprinklerFolder(plot)
+				onSprinklerChanged()
+			end
+		end))
+		return
+	end
+
+	for _, folder in folders do
+		table.insert(sprinklerWatchers, folder.ChildAdded:Connect(function(child)
+			hookSprinklerInstance(child)
+			onSprinklerChanged()
+		end))
+		table.insert(sprinklerWatchers, folder.ChildRemoved:Connect(onSprinklerChanged))
+		for _, child in folder:GetChildren() do
+			hookSprinklerInstance(child)
+		end
+	end
+end
+
+local function getEquippedTool()
+	local character = LocalPlayer.Character
+	if not character then return nil end
+	return character:FindFirstChildWhichIsA("Tool")
+end
+
+local function findCarrotSeedTool()
+	local function scan(container)
+		if not container then return nil end
+		for _, child in container:GetChildren() do
+			if child:IsA("Tool") then
+				local seedType = child:GetAttribute("SeedTool")
+				local lowerName = string.lower(child.Name)
+				if seedType then
+					local s = string.lower(tostring(seedType))
+					if s == string.lower(SEED_NAME) or string.find(lowerName, string.lower(SEED_NAME), 1, true) then
+						return child, seedType
+					end
+				elseif string.find(lowerName, string.lower(SEED_NAME), 1, true) then
+					return child, SEED_NAME
+				end
+			end
+		end
+		return nil
+	end
+
+	local equipped = getEquippedTool()
+	if equipped then
+		local seedType = equipped:GetAttribute("SeedTool")
+		if seedType and string.lower(tostring(seedType)) == string.lower(SEED_NAME) then
+			return equipped, seedType
+		end
+		if string.find(string.lower(equipped.Name), string.lower(SEED_NAME), 1, true) then
+			return equipped, seedType or SEED_NAME
+		end
+	end
+
+	local fromChar = scan(LocalPlayer.Character)
+	if fromChar then return fromChar end
+	return scan(LocalPlayer:FindFirstChildOfClass("Backpack"))
+end
+
+local function equipSeedTool(tool)
+	if not tool then return false end
+	if getEquippedTool() == tool then return true end
+	local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return false end
+	humanoid:EquipTool(tool)
+	return true
+end
+
+local function getOccupiedXZ(plot)
+	local occupied = {}
+	local plants = plot:FindFirstChild("Plants")
+	if not plants then return occupied end
+	for _, plant in plants:GetChildren() do
+		local pos
+		if plant:IsA("Model") then
+			local part = plant.PrimaryPart or plant:FindFirstChildWhichIsA("BasePart", true)
+			if part then pos = part.Position end
+		elseif plant:IsA("BasePart") then
+			pos = plant.Position
+		end
+		if pos then table.insert(occupied, Vector2.new(pos.X, pos.Z)) end
+	end
+	return occupied
+end
+
+local function isSpotFree(position, occupied)
+	local test = Vector2.new(position.X, position.Z)
+	for _, occ in occupied do
+		if (test - occ).Magnitude < MIN_PLANT_GAP then return false end
+	end
+	return true
+end
+
+local function getPlantAreas(plot)
+	local areas = {}
+	for _, part in CollectionService:GetTagged("PlantArea") do
+		if part:IsDescendantOf(plot) then
+			table.insert(areas, part)
+		end
+	end
+	if #areas == 0 then
+		for _, inst in plot:GetDescendants() do
+			if inst:IsA("BasePart") then
+				local n = string.lower(inst.Name)
+				if n == "plantarea" or n == "dirt" or n == "soil" or n == "farm" or n == "plot" then
+					table.insert(areas, inst)
+				end
+			end
+		end
+	end
+	return areas
+end
+
+local function createPlantAreaParams(areas)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = areas
+	return params
+end
+
+local function createPlantsParams()
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	local folders = {}
+	for _, plot in Gardens:GetChildren() do
+		local plants = plot:FindFirstChild("Plants")
+		if plants then table.insert(folders, plants) end
+	end
+	params.FilterDescendantsInstances = folders
+	return params
+end
+
+local function raycastPlantPosition(origin, plantAreaParams, plantsParams, plot)
+	local hit = workspace:Raycast(origin, Vector3.new(0, -500, 0), plantAreaParams)
+	if not hit or not hit.Instance:IsDescendantOf(plot) then return nil end
+	local plantHit = workspace:Raycast(origin, Vector3.new(0, -500, 0), plantsParams)
+	if plantHit then
+		local a = Vector2.new(hit.Position.X, hit.Position.Z)
+		local p = Vector2.new(plantHit.Position.X, plantHit.Position.Z)
+		if (p - a).Magnitude < MIN_PLANT_GAP then return nil end
+	end
+	return hit.Position
+end
+
+rebuildSpotQueue = function()
+	spotQueue = {}
+
+	local plot = getPlayerPlot()
+	if not plot then
+		anchorLabel = "none"
+		return 0
+	end
+
+	local anchorPos, anchorName, sprinklerInst = findSuperSprinkler(plot)
+	if not anchorPos then
+		anchorLabel = "none"
+		trackedSprinkler = nil
+		return 0
+	end
+
+	trackedSprinkler = sprinklerInst
+	anchorLabel = anchorName
+
+	local areas = getPlantAreas(plot)
+	if #areas == 0 then
+		return 0
+	end
+
+	local plantAreaParams = createPlantAreaParams(areas)
+	local plantsParams = createPlantsParams()
+	local occupied = getOccupiedXZ(plot)
+	local anchorXZ = Vector2.new(anchorPos.X, anchorPos.Z)
+	local candidates = {}
+
+	for _, area in areas do
+		local size = area.Size
+		local cf = area.CFrame
+		local halfX = size.X * 0.5
+		local halfZ = size.Z * 0.5
+		for x = -halfX + GRID_STEP * 0.5, halfX, GRID_STEP do
+			for z = -halfZ + GRID_STEP * 0.5, halfZ, GRID_STEP do
+				local sample = (cf * CFrame.new(x, size.Y * 0.5 + 8, z)).Position
+				local sampleXZ = Vector2.new(sample.X, sample.Z)
+				if (sampleXZ - anchorXZ).Magnitude <= plantRadius then
+					local plantPos = raycastPlantPosition(sample, plantAreaParams, plantsParams, plot)
+					if plantPos and isSpotFree(plantPos, occupied) then
+						table.insert(candidates, {
+							position = plantPos,
+							distance = (sampleXZ - anchorXZ).Magnitude,
+						})
+					end
+				end
+			end
+		end
+	end
+
+	for _, item in candidates do
+		table.insert(spotQueue, item.position)
+	end
+	shuffleList(spotQueue)
+
+	return #spotQueue
+end
+
+local function tryPlantAt(position, seedType, tool)
+	local now = os.clock()
+	if now - lastPlantClock < plantDelay then
+		return false
+	end
+
+	local planted = false
+
+	if PlantController and PlantController.TryPlantWithRay then
+		local origin = position + Vector3.new(0, 30, 0)
+		local direction = Vector3.new(0, -60, 0)
+		planted = PlantController:TryPlantWithRay(Ray.new(origin, direction)) == true
+	else
+		Networking.Plant.PlantSeed:Fire(position, seedType, tool)
+		planted = true
+	end
+
+	if planted then
+		lastPlantClock = now
+		plantedCount = plantedCount + 1
+	end
+
+	return planted
+end
+
+local function plantTick()
+	if not userEnabled then return end
+
+	local plot = getPlayerPlot()
+	if not plot then
+		return
+	end
+
+	local sprinklerPos, sprinklerName, sprinklerInst = findSuperSprinkler(plot)
+	if not sprinklerPos then
+		trackedSprinkler = nil
+		table.clear(spotQueue)
+		return
+	end
+
+	if trackedSprinkler ~= sprinklerInst then
+		trackedSprinkler = sprinklerInst
+		plantedCount = 0
+		rebuildSpotQueue()
+	end
+
+	local tool, seedType = findCarrotSeedTool()
+	if not tool or not seedType then
+		return
+	end
+
+	equipSeedTool(tool)
+	tool = getEquippedTool() or tool
+
+	if #spotQueue == 0 then
+		rebuildSpotQueue()
+		if #spotQueue == 0 then return end
+	end
+
+	local position = takeRandomSpot()
+	if position then
+		tryPlantAt(position, seedType, tool)
+	end
+end
+
+local oldGui = PlayerGui:FindFirstChild("GardenHubAutoPlant")
+if oldGui then oldGui:Destroy() end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "GardenHubAutoPlant"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = PlayerGui
+
+-- Detect screen size for responsiveness
+local isMobile = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+local screenSize = screenGui.AbsoluteSize
+local panelWidth = math.min(320, screenSize.X - 32)
+local panelHeight = 290
+
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, panelWidth, 0, panelHeight)
+main.Position = isMobile and UDim2.new(0.5, -panelWidth / 2, 0.5, -panelHeight / 2) or UDim2.new(0, 16, 0.5, -130)
+main.BackgroundColor3 = C.bg
+main.Active = true
+main.Parent = screenGui
+corner(main, 12)
+stroke(main, C.stroke)
+
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 42)
+header.BackgroundColor3 = C.panel
+header.Parent = main
+corner(header, 12)
+pad(header, 10, 12, 10, 12)
+
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1
+title.Size = UDim2.new(1, -36, 1, 0)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 15
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextColor3 = C.text
+title.Text = "Auto Plant - Carrot"
+title.Parent = header
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 28, 0, 28)
+closeBtn.Position = UDim2.new(1, -28, 0.5, -14)
+closeBtn.BackgroundColor3 = C.field
+closeBtn.Text = "X"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 13
+closeBtn.TextColor3 = C.text
+closeBtn.Parent = header
+closeBtn.Active = true
+closeBtn.Selectable = true
+corner(closeBtn, 6)
+
+local body = Instance.new("Frame")
+body.Position = UDim2.new(0, 0, 0, 42)
+body.Size = UDim2.new(1, 0, 1, -42)
+body.BackgroundTransparency = 1
+body.Parent = main
+pad(body, 10, 12, 12, 12)
+
+local info = Instance.new("TextLabel")
+info.BackgroundTransparency = 1
+info.Size = UDim2.new(1, 0, 0, 44)
+info.Font = Enum.Font.Gotham
+info.TextSize = 12
+info.TextWrapped = true
+info.TextXAlignment = Enum.TextXAlignment.Left
+info.TextColor3 = C.muted
+info.Text = "Uses plot.Sprinklers > id > SprinklerName attribute. Scatters within radius. Auto pause/resume."
+info.Parent = body
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(1, 0, 0, 38)
+toggleBtn.Position = UDim2.new(0, 0, 0, 50)
+toggleBtn.BackgroundColor3 = C.accentDark
+toggleBtn.Text = "START Auto Plant"
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 14
+toggleBtn.TextColor3 = C.text
+toggleBtn.Parent = body
+toggleBtn.Active = true
+toggleBtn.Selectable = true
+corner(toggleBtn, 8)
+
+local speedLabel = Instance.new("TextLabel")
+speedLabel.BackgroundTransparency = 1
+speedLabel.Size = UDim2.new(1, 0, 0, 18)
+speedLabel.Position = UDim2.new(0, 0, 0, 98)
+speedLabel.Font = Enum.Font.Gotham
+speedLabel.TextSize = 12
+speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+speedLabel.TextColor3 = C.muted
+speedLabel.Text = "Speed: 0.05s"
+speedLabel.Parent = body
+
+local speedContainer = Instance.new("Frame")
+speedContainer.Size = UDim2.new(1, 0, 0, 30)
+speedContainer.Position = UDim2.new(0, 0, 0, 118)
+speedContainer.BackgroundTransparency = 1
+speedContainer.Parent = body
+
+local speedBox = Instance.new("TextBox")
+speedBox.Size = UDim2.new(1, -65, 0, 30)
+speedBox.Position = UDim2.new(0, 0, 0, 0)
+speedBox.BackgroundColor3 = C.field
+speedBox.Text = tostring(DEFAULT_DELAY)
+speedBox.Font = Enum.Font.Gotham
+speedBox.TextSize = 13
+speedBox.TextColor3 = C.text
+speedBox.ClearTextOnFocus = false
+speedBox.Parent = speedContainer
+corner(speedBox, 6)
+pad(speedBox, 0, 8, 0, 8)
+
+local speedDecBtn = Instance.new("TextButton")
+speedDecBtn.Size = UDim2.new(0, 30, 0, 30)
+speedDecBtn.Position = UDim2.new(1, -65, 0, 0)
+speedDecBtn.BackgroundColor3 = C.field
+speedDecBtn.Text = "-"
+speedDecBtn.Font = Enum.Font.GothamBold
+speedDecBtn.TextSize = 16
+speedDecBtn.TextColor3 = C.text
+speedDecBtn.Parent = speedContainer
+speedDecBtn.Active = true
+speedDecBtn.Selectable = true
+corner(speedDecBtn, 6)
+
+local speedIncBtn = Instance.new("TextButton")
+speedIncBtn.Size = UDim2.new(0, 30, 0, 30)
+speedIncBtn.Position = UDim2.new(1, -30, 0, 0)
+speedIncBtn.BackgroundColor3 = C.field
+speedIncBtn.Text = "+"
+speedIncBtn.Font = Enum.Font.GothamBold
+speedIncBtn.TextSize = 16
+speedIncBtn.TextColor3 = C.text
+speedIncBtn.Parent = speedContainer
+speedIncBtn.Active = true
+speedIncBtn.Selectable = true
+corner(speedIncBtn, 6)
+
+local function decreaseSpeed()
+	local current = tonumber(speedBox.Text) or DEFAULT_DELAY
+	speedBox.Text = tostring(math.max(0, current - 0.01))
+	applySettings()
+end
+
+local function increaseSpeed()
+	local current = tonumber(speedBox.Text) or DEFAULT_DELAY
+	speedBox.Text = tostring(math.min(1, current + 0.05))
+	applySettings()
+end
+
+speedDecBtn.MouseButton1Click:Connect(decreaseSpeed)
+speedIncBtn.MouseButton1Click:Connect(increaseSpeed)
+
+local radiusLabel = Instance.new("TextLabel")
+radiusLabel.BackgroundTransparency = 1
+radiusLabel.Size = UDim2.new(1, 0, 0, 18)
+radiusLabel.Position = UDim2.new(0, 0, 0, 156)
+radiusLabel.Font = Enum.Font.Gotham
+radiusLabel.TextSize = 12
+radiusLabel.TextXAlignment = Enum.TextXAlignment.Left
+radiusLabel.TextColor3 = C.muted
+radiusLabel.Text = "Radius: 14 studs"
+radiusLabel.Parent = body
+
+local radiusContainer = Instance.new("Frame")
+radiusContainer.Size = UDim2.new(1, 0, 0, 30)
+radiusContainer.Position = UDim2.new(0, 0, 0, 176)
+radiusContainer.BackgroundTransparency = 1
+radiusContainer.Parent = body
+
+local radiusBox = Instance.new("TextBox")
+radiusBox.Size = UDim2.new(1, -65, 0, 30)
+radiusBox.Position = UDim2.new(0, 0, 0, 0)
+radiusBox.BackgroundColor3 = C.field
+radiusBox.Text = tostring(DEFAULT_RADIUS)
+radiusBox.Font = Enum.Font.Gotham
+radiusBox.TextSize = 13
+radiusBox.TextColor3 = C.text
+radiusBox.ClearTextOnFocus = false
+radiusBox.Parent = radiusContainer
+corner(radiusBox, 6)
+pad(radiusBox, 0, 8, 0, 8)
+
+local radiusDecBtn = Instance.new("TextButton")
+radiusDecBtn.Size = UDim2.new(0, 30, 0, 30)
+radiusDecBtn.Position = UDim2.new(1, -65, 0, 0)
+radiusDecBtn.BackgroundColor3 = C.field
+radiusDecBtn.Text = "-"
+radiusDecBtn.Font = Enum.Font.GothamBold
+radiusDecBtn.TextSize = 16
+radiusDecBtn.TextColor3 = C.text
+radiusDecBtn.Parent = radiusContainer
+radiusDecBtn.Active = true
+radiusDecBtn.Selectable = true
+corner(radiusDecBtn, 6)
+
+local radiusIncBtn = Instance.new("TextButton")
+radiusIncBtn.Size = UDim2.new(0, 30, 0, 30)
+radiusIncBtn.Position = UDim2.new(1, -30, 0, 0)
+radiusIncBtn.BackgroundColor3 = C.field
+radiusIncBtn.Text = "+"
+radiusIncBtn.Font = Enum.Font.GothamBold
+radiusIncBtn.TextSize = 16
+radiusIncBtn.TextColor3 = C.text
+radiusIncBtn.Parent = radiusContainer
+radiusIncBtn.Active = true
+radiusIncBtn.Selectable = true
+corner(radiusIncBtn, 6)
+
+local function decreaseRadius()
+	local current = tonumber(radiusBox.Text) or DEFAULT_RADIUS
+	radiusBox.Text = tostring(math.max(4, current - 2))
+	applySettings()
+end
+
+local function increaseRadius()
+	local current = tonumber(radiusBox.Text) or DEFAULT_RADIUS
+	radiusBox.Text = tostring(math.min(60, current + 2))
+	applySettings()
+end
+
+radiusDecBtn.MouseButton1Click:Connect(decreaseRadius)
+radiusIncBtn.MouseButton1Click:Connect(increaseRadius)
+
+local rescanBtn = Instance.new("TextButton")
+rescanBtn.Size = UDim2.new(1, 0, 0, 28)
+rescanBtn.Position = UDim2.new(0, 0, 1, -28)
+rescanBtn.BackgroundColor3 = C.field
+rescanBtn.Text = "Rescan Spots"
+rescanBtn.Font = Enum.Font.GothamBold
+rescanBtn.TextSize = 12
+rescanBtn.TextColor3 = C.text
+rescanBtn.Parent = body
+rescanBtn.Active = true
+rescanBtn.Selectable = true
+corner(rescanBtn, 6)
+
+local function refreshToggleUi()
+	if userEnabled then
+		toggleBtn.Text = "STOP Auto Plant"
+		toggleBtn.BackgroundColor3 = C.danger
+	else
+		toggleBtn.Text = "START Auto Plant"
+		toggleBtn.BackgroundColor3 = C.accentDark
+	end
+end
+
+local function parseNumber(text, fallback, minValue, maxValue)
+	local n = tonumber(text)
+	if not n then return fallback end
+	if minValue and n < minValue then n = minValue end
+	if maxValue and n > maxValue then n = maxValue end
+	return n
+end
+
+local function applySettings()
+	plantDelay = parseNumber(speedBox.Text, DEFAULT_DELAY, 0, 1)
+	plantRadius = parseNumber(radiusBox.Text, DEFAULT_RADIUS, 4, 60)
+	speedLabel.Text = string.format("Speed: %.2fs", plantDelay)
+	radiusLabel.Text = string.format("Radius: %d studs", math.floor(plantRadius + 0.5))
+end
+
+local function onCloseClick()
+	userEnabled = false
+	refreshToggleUi()
+	setVisible(false)
+end
+
+local function onToggleClick()
+	applySettings()
+	userEnabled = not userEnabled
+	if userEnabled then
+		plantedCount = 0
+		watchSprinklerFolder(getPlayerPlot())
+		onSprinklerChanged()
+	else
+		table.clear(spotQueue)
+		trackedSprinkler = nil
+	end
+	refreshToggleUi()
+end
+
+local function onRescanClick()
+	applySettings()
+	rebuildSpotQueue()
+end
+
+closeBtn.MouseButton1Click:Connect(onCloseClick)
+toggleBtn.MouseButton1Click:Connect(onToggleClick)
+rescanBtn.MouseButton1Click:Connect(onRescanClick)
+
+speedBox.FocusLost:Connect(applySettings)
+radiusBox.FocusLost:Connect(applySettings)
+
+-- Create floating toggle button for mobile/easy access
+local floatingToggle = Instance.new("TextButton")
+floatingToggle.Name = "FloatingToggle"
+floatingToggle.Size = UDim2.new(0, 50, 0, 50)
+floatingToggle.Position = UDim2.new(1, -70, 0, 20)
+floatingToggle.BackgroundColor3 = C.accent
+floatingToggle.TextScaled = true
+floatingToggle.Text = "◆"
+floatingToggle.Font = Enum.Font.GothamBold
+floatingToggle.TextColor3 = C.text
+floatingToggle.Parent = screenGui
+floatingToggle.Active = true
+floatingToggle.Selectable = true
+corner(floatingToggle, 8)
+stroke(floatingToggle, C.stroke)
+
+local function setVisible(state)
+	main.Visible = state
+end
+
+floatingToggle.MouseButton1Click:Connect(function()
+	setVisible(not main.Visible)
+end)
+
+RunService.Heartbeat:Connect(function()
+	if userEnabled then plantTick() end
+end)
+
+LocalPlayer:GetAttributeChangedSignal("PlotId"):Connect(function()
+	watchSprinklerFolder(getPlayerPlot())
+	if userEnabled then onSprinklerChanged() end
+end)
+
+-- Desktop keyboard shortcut (RightShift) - doesn't interfere on mobile
+pcall(function()
+	UserInputService.InputBegan:Connect(function(input, processed)
+		if processed then return end
+		if input.KeyCode == Enum.KeyCode.RightShift then
+			setVisible(not main.Visible)
+		end
+	end)
+end)
+
+applySettings()
+watchSprinklerFolder(getPlayerPlot())
+rebuildSpotQueue()
+setVisible(true)
+onToggleClick()
+
+print("[GardenHub Auto Plant] Loaded. RightShift = toggle.")
