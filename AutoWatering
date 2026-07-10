@@ -197,29 +197,34 @@ local function forceDeletePlants()
 		STATE.statusMessage = "❌ No Plants folder found"
 		return
 	end
-	local kept = false
+
+	local kept = 0
+	local keepAmount = 5
+
 	for _, plant in ipairs(folder:GetChildren()) do
 		local seed = plant:GetAttribute("SeedName")
 		if STATE.selectedSeedName then
 			if seed == STATE.selectedSeedName then
-				if not kept then
-					kept = true
+				if kept < keepAmount then
+					kept += 1
 				else
 					plant:Destroy()
 				end
 			end
 		else
-			if not kept then
-				kept = true
+			if kept < keepAmount then
+				kept += 1
 			else
 				plant:Destroy()
 			end
 		end
 	end
+
 	STATE.wateredPlants = {}
 	STATE.plantsWatered = 0
-	STATE.statusMessage = "🗑️ Removed plants, kept 1"
+	STATE.statusMessage = "🗑️ Removed plants, kept " .. keepAmount
 end
+
 
 -- ════════════════════════════════════════════════════════════
 -- AUTO TP
