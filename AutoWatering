@@ -681,41 +681,11 @@ local function mkRowBtn(parent, order, callback)
 end
 
 -- ════════════════════════════════════════════════════════════
--- TOGGLE ROW
--- ════════════════════════════════════════════════════════════
-local toggleRow = Instance.new("Frame")
-toggleRow.LayoutOrder = 1
-toggleRow.Size = UDim2.new(1,0,0,ROW_H+8)
-toggleRow.BackgroundColor3 = C.section
-toggleRow.BorderSizePixel = 0
-toggleRow.Parent = Body
-mkCorner(toggleRow, 6)
-
-mkLabel({
-	text = "Auto Watering",
-	size = FONT_LG, font = Enum.Font.GothamBold, color = C.text,
-	sz = UDim2.new(0.6,0,1,0), pos = UDim2.new(0,10,0,0),
-	parent = toggleRow,
-})
-
-local ToggleBtn = Instance.new("TextButton")
-ToggleBtn.Size = UDim2.new(0,60,0,BTN_H)
-ToggleBtn.Position = UDim2.new(1,-(60+8),0.5,-BTN_H/2)
-ToggleBtn.BackgroundColor3 = C.red
-ToggleBtn.Text = "OFF"
-ToggleBtn.TextColor3 = C.text
-ToggleBtn.Font = Enum.Font.GothamBold
-ToggleBtn.TextSize = FONT_MD
-ToggleBtn.BorderSizePixel = 0
-ToggleBtn.Parent = toggleRow
-mkCorner(ToggleBtn, 6)
-
--- ════════════════════════════════════════════════════════════
 -- SECTIONS
 -- ════════════════════════════════════════════════════════════
 local PlotContent  = mkSection(3, "🌍 Select Target Plot", true)
 local SeedContent  = mkSection(4, "🌱 Filter by Plant Type", true)
-local SettContent  = mkSection(5, "⚙️ Settings", false)
+local SettContent  = mkSection(5, "⚙️ Settings", true)
 local StatsContent = mkSection(6, "📊 Stats", true)
 
 -- ── Settings rows
@@ -810,6 +780,36 @@ end)
 DeleteBtn.MouseLeave:Connect(function()
 	DeleteBtn.BackgroundColor3 = Color3.fromRGB(160,40,40)
 end)
+
+-- Auto Watering ON/OFF (now in Settings, order 1)
+local autoWaterRow = Instance.new("Frame")
+autoWaterRow.LayoutOrder = 1
+autoWaterRow.Size = UDim2.new(1,0,0,ROW_H)
+autoWaterRow.BackgroundTransparency = 1
+autoWaterRow.Parent = SettContent
+
+mkLabel({
+	text = "Auto Watering", size = FONT_SM, font = Enum.Font.GothamBold, color = C.text,
+	sz = UDim2.new(0.6,0,1,0), pos = UDim2.new(0,2,0,0), parent = autoWaterRow,
+})
+
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Size = UDim2.new(0,50,0,BTN_H)
+ToggleBtn.Position = UDim2.new(1,-(50+2),0.5,-BTN_H/2)
+ToggleBtn.BackgroundColor3 = C.red
+ToggleBtn.Text = "OFF"
+ToggleBtn.TextColor3 = C.text
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.TextSize = FONT_MD
+ToggleBtn.BorderSizePixel = 0
+ToggleBtn.Parent = autoWaterRow
+mkCorner(ToggleBtn, 6)
+
+-- bump other rows down
+delayRow.LayoutOrder = 2
+tpRow.LayoutOrder = 3
+deleteRow.LayoutOrder = 4
+ 
 
 -- Stats label
 local statsLabel = Instance.new("TextLabel")
