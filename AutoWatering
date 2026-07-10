@@ -383,8 +383,8 @@ local OpenCloseBtn = Instance.new("TextButton")
 OpenCloseBtn.Name = "OpenCloseBtn"
 OpenCloseBtn.Size = UDim2.new(0, 110, 0, 34)
 OpenCloseBtn.Position = isMobile
-	and UDim2.new(0.5, -55, 0, 8)   -- top-center on mobile
-	or  UDim2.new(0, 24, 0, 8)      -- top-left on desktop (above the window)
+	and UDim2.new(0, 8, 0.5, -17)   -- center-left on mobile
+	or  UDim2.new(0, 8, 0.5, -17)   -- center-left on desktop
 OpenCloseBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 34)
 OpenCloseBtn.Text = "💧 Close UI"
 OpenCloseBtn.TextColor3 = C.text
@@ -394,6 +394,7 @@ OpenCloseBtn.BorderSizePixel = 0
 OpenCloseBtn.ZIndex = 200
 OpenCloseBtn.Parent = Root
 mkCorner(OpenCloseBtn, 8)
+
 
 local btnStroke = Instance.new("UIStroke")
 btnStroke.Color = C.border
@@ -410,11 +411,12 @@ Win.Parent = Root
 
 if isMobile then
 	Win.Size = UDim2.new(BASE_W, 0, BASE_H, 0)
-	Win.Position = UDim2.new((1-BASE_W)/2, 0, (1-BASE_H)/2, 0)
+	Win.Position = UDim2.new((1-BASE_W)/2, 0, 0.5, -BASE_H * 0.375)
 else
 	Win.Size = UDim2.new(0, BASE_W, 0, BASE_H)
-	Win.Position = UDim2.new(0, 24, 0, 50) -- offset down to make room for the toggle button
+	Win.Position = UDim2.new(0.5, -BASE_W/2, 0.5, -BASE_H/2)
 end
+
 
 mkCorner(Win, 10)
 
