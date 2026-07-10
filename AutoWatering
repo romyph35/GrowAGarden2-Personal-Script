@@ -8,14 +8,12 @@ local TeleportService = game:GetService("TeleportService")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
--- Wait for full game load
 if not game:IsLoaded() then game.Loaded:Wait() end
-task.wait(2) -- extra buffer for server replication
+task.wait(2)
 
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 LocalPlayer.CharacterAdded:Connect(function(c) Character = c end)
 
--- Safe require with retry
 local Networking
 do
 	local ok, result
@@ -36,14 +34,14 @@ end
 -- RESPONSIVE SCALE
 -- ════════════════════════════════════════════════════════════
 local isMobile = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
-local BASE_W  = isMobile and 0.88 or 340
-local BASE_H  = isMobile and 0.75 or 560
-local FONT_LG = isMobile and 16 or 15
-local FONT_MD = isMobile and 14 or 12
-local FONT_SM = isMobile and 12 or 10
-local ROW_H   = isMobile and 50 or 38
-local HDR_H   = isMobile and 58 or 48
-local BTN_H   = isMobile and 38 or 28
+local BASE_W  = isMobile and 220 or 340
+local BASE_H  = isMobile and 420 or 560
+local FONT_LG = isMobile and 11 or 15
+local FONT_MD = isMobile and 10 or 12
+local FONT_SM = isMobile and 8  or 10
+local ROW_H   = isMobile and 32 or 38
+local HDR_H   = isMobile and 36 or 48
+local BTN_H   = isMobile and 24 or 28
 
 -- ════════════════════════════════════════════════════════════
 -- CONFIG & STATE
@@ -199,7 +197,6 @@ local function forceDeletePlants()
 		STATE.statusMessage = "❌ No Plants folder found"
 		return
 	end
-
 	local kept = false
 	for _, plant in ipairs(folder:GetChildren()) do
 		local seed = plant:GetAttribute("SeedName")
@@ -219,7 +216,6 @@ local function forceDeletePlants()
 			end
 		end
 	end
-
 	STATE.wateredPlants = {}
 	STATE.plantsWatered = 0
 	STATE.statusMessage = "🗑️ Removed plants, kept 1"
@@ -414,24 +410,21 @@ Root.Size = UDim2.new(1,0,1,0)
 Root.Parent = ScreenGui
 
 -- ════════════════════════════════════════════════════════════
--- OPEN/CLOSE TOGGLE BUTTON (floating, always visible)
+-- OPEN/CLOSE TOGGLE BUTTON
 -- ════════════════════════════════════════════════════════════
 local OpenCloseBtn = Instance.new("TextButton")
 OpenCloseBtn.Name = "OpenCloseBtn"
-OpenCloseBtn.Size = UDim2.new(0, 110, 0, 34)
-OpenCloseBtn.Position = isMobile
-	and UDim2.new(0, 8, 0.5, -17)   -- center-left on mobile
-	or  UDim2.new(0, 8, 0.5, -17)   -- center-left on desktop
+OpenCloseBtn.Size = UDim2.new(0, isMobile and 80 or 110, 0, isMobile and 26 or 34)
+OpenCloseBtn.Position = UDim2.new(0, 8, 0.5, isMobile and -13 or -17)
 OpenCloseBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 34)
 OpenCloseBtn.Text = "💧 Close UI"
 OpenCloseBtn.TextColor3 = C.text
 OpenCloseBtn.Font = Enum.Font.GothamBold
-OpenCloseBtn.TextSize = FONT_MD
+OpenCloseBtn.TextSize = isMobile and 9 or FONT_MD
 OpenCloseBtn.BorderSizePixel = 0
 OpenCloseBtn.ZIndex = 200
 OpenCloseBtn.Parent = Root
 mkCorner(OpenCloseBtn, 8)
-
 
 local btnStroke = Instance.new("UIStroke")
 btnStroke.Color = C.border
@@ -444,18 +437,15 @@ Win.Name = "Window"
 Win.BackgroundColor3 = C.panel
 Win.BorderSizePixel = 0
 Win.ClipsDescendants = true
+Win.Size = UDim2.fromOffset(BASE_W, BASE_H)
+local cam = workspace.CurrentCamera
+Win.Position = UDim2.fromOffset(
+	(cam.ViewportSize.X - BASE_W) / 2,
+	(cam.ViewportSize.Y - BASE_H) / 2
+)
+
+Win.Position = UDim2.new(0.5, -BASE_W/2, 0.5, -BASE_H/2)
 Win.Parent = Root
-
-if isMobile then
-	Win.Size = UDim2.new(0.92, 0, 0, 520)
-	Win.Position = UDim2.new(0.04, 0, 0.5, -260)
-else
-	Win.Size = UDim2.new(0, BASE_W, 0, BASE_H)
-	Win.Position = UDim2.new(0.5, -BASE_W/2, 0.5, -BASE_H/2)
-end
-
-
-
 mkCorner(Win, 10)
 
 local winStroke = Instance.new("UIStroke")
@@ -463,7 +453,7 @@ winStroke.Color = C.border
 winStroke.Thickness = 1.2
 winStroke.Parent = Win
 
--- Open/Close button logic
+-- Open/Close logic
 local winVisible = true
 
 local function updateOpenCloseBtn()
@@ -484,7 +474,6 @@ end
 
 OpenCloseBtn.MouseButton1Click:Connect(toggleWindow)
 OpenCloseBtn.TouchTap:Connect(toggleWindow)
-
 OpenCloseBtn.MouseEnter:Connect(function()
 	OpenCloseBtn.BackgroundColor3 = Color3.fromRGB(55, 55, 65)
 end)
@@ -503,14 +492,14 @@ TitleBar.Parent = Win
 mkLabel({
 	text = "💧 Auto Watering Can",
 	size = FONT_LG, font = Enum.Font.GothamBold, color = C.text,
-	sz = UDim2.new(1,-110,0,HDR_H*0.5),
-	pos = UDim2.new(0,14,0,6), z=2, parent = TitleBar,
+	sz = UDim2.new(1,-80,0,HDR_H*0.55),
+	pos = UDim2.new(0,10,0,4), z=2, parent = TitleBar,
 })
 mkLabel({
 	text = "Super Watering Can only",
 	size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-	sz = UDim2.new(1,-110,0,HDR_H*0.38),
-	pos = UDim2.new(0,14,0,HDR_H*0.52), z=2, parent = TitleBar,
+	sz = UDim2.new(1,-80,0,HDR_H*0.4),
+	pos = UDim2.new(0,10,0,HDR_H*0.55), z=2, parent = TitleBar,
 })
 
 local titleLine = Instance.new("Frame")
@@ -521,11 +510,10 @@ titleLine.BorderSizePixel = 0
 titleLine.ZIndex = 2
 titleLine.Parent = TitleBar
 
--- Top-right buttons
 local function mkTopBtn(label, xOffset, bgColor, callback)
 	local btn = Instance.new("TextButton")
-	btn.Size = UDim2.new(0,BTN_H,0,BTN_H)
-	btn.Position = UDim2.new(1,xOffset,0.5,-BTN_H/2)
+	btn.Size = UDim2.new(0, BTN_H, 0, BTN_H)
+	btn.Position = UDim2.new(1, xOffset, 0.5, -BTN_H/2)
 	btn.BackgroundColor3 = bgColor
 	btn.Text = label
 	btn.TextColor3 = C.text
@@ -541,47 +529,45 @@ local function mkTopBtn(label, xOffset, bgColor, callback)
 end
 
 local minimized = false
-mkTopBtn("-", -(BTN_H*2+16), C.topBtn, function()
+mkTopBtn("-", -(BTN_H*2+10), C.topBtn, function()
 	minimized = not minimized
 	local body = Win:FindFirstChild("Body")
 	if body then body.Visible = not minimized end
 	local sb = Win:FindFirstChild("StatusBar")
 	if sb then sb.Visible = not minimized end
-	if isMobile then
-		Win.Size = minimized and UDim2.new(BASE_W,0,0,HDR_H) or UDim2.new(BASE_W,0,BASE_H,0)
-	else
-		Win.Size = minimized and UDim2.new(0,BASE_W,0,HDR_H) or UDim2.new(0,BASE_W,0,BASE_H)
-	end
+	Win.Size = minimized
+		and UDim2.new(0, BASE_W, 0, HDR_H)
+		or  UDim2.new(0, BASE_W, 0, BASE_H)
 end)
 
-mkTopBtn("X", -(BTN_H+8), Color3.fromRGB(180,50,50), function()
+mkTopBtn("X", -(BTN_H+6), Color3.fromRGB(180,50,50), function()
 	ScreenGui:Destroy()
 end)
 
 -- ── Body
 local Body = Instance.new("ScrollingFrame")
 Body.Name = "Body"
-Body.Size = UDim2.new(1,0,1,-(HDR_H+28))
+Body.Size = UDim2.new(1,0,1,-(HDR_H+24))
 Body.Position = UDim2.new(0,0,0,HDR_H)
 Body.BackgroundTransparency = 1
 Body.BorderSizePixel = 0
-Body.ScrollBarThickness = isMobile and 4 or 3
+Body.ScrollBarThickness = isMobile and 2 or 3
 Body.ScrollBarImageColor3 = C.accent
 Body.CanvasSize = UDim2.new(0,0,0,0)
 Body.AutomaticCanvasSize = Enum.AutomaticSize.Y
 Body.Parent = Win
 
 local BodyLayout = Instance.new("UIListLayout")
-BodyLayout.Padding = UDim.new(0,6)
+BodyLayout.Padding = UDim.new(0, isMobile and 4 or 6)
 BodyLayout.SortOrder = Enum.SortOrder.LayoutOrder
 BodyLayout.Parent = Body
-mkPad(Body, 10,10,10,10)
+mkPad(Body, 6, 6, 6, 6)
 
 -- Status bar
 local StatusBar = Instance.new("Frame")
 StatusBar.Name = "StatusBar"
-StatusBar.Size = UDim2.new(1,0,0,28)
-StatusBar.Position = UDim2.new(0,0,1,-28)
+StatusBar.Size = UDim2.new(1,0,0,24)
+StatusBar.Position = UDim2.new(0,0,1,-24)
 StatusBar.BackgroundColor3 = C.bg
 StatusBar.BorderSizePixel = 0
 StatusBar.ZIndex = 2
@@ -590,8 +576,8 @@ StatusBar.Parent = Win
 local StatusLabel = mkLabel({
 	text = "Loading...",
 	size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-	sz = UDim2.new(1,-10,1,0),
-	pos = UDim2.new(0,10,0,0), z=2, parent = StatusBar,
+	sz = UDim2.new(1,-8,1,0),
+	pos = UDim2.new(0,8,0,0), z=2, parent = StatusBar,
 })
 
 -- ════════════════════════════════════════════════════════════
@@ -607,7 +593,7 @@ local function mkSection(order, title, defaultOpen)
 	wrapper.Parent = Body
 
 	local wLayout = Instance.new("UIListLayout")
-	wLayout.Padding = UDim.new(0,4)
+	wLayout.Padding = UDim.new(0,3)
 	wLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	wLayout.Parent = wrapper
 
@@ -623,13 +609,13 @@ local function mkSection(order, title, defaultOpen)
 
 	mkLabel({
 		text = title, size = FONT_MD, font = Enum.Font.GothamBold, color = C.text,
-		sz = UDim2.new(1,-40,1,0), pos = UDim2.new(0,10,0,0), z=1, parent = hdr,
+		sz = UDim2.new(1,-30,1,0), pos = UDim2.new(0,8,0,0), z=1, parent = hdr,
 	})
 
 	local arrow = mkLabel({
 		text = defaultOpen ~= false and "▾" or "▸",
-		size = FONT_MD+2, font = Enum.Font.GothamBold, color = C.sub,
-		sz = UDim2.new(0,28,1,0), pos = UDim2.new(1,-32,0,0),
+		size = FONT_MD+1, font = Enum.Font.GothamBold, color = C.sub,
+		sz = UDim2.new(0,24,1,0), pos = UDim2.new(1,-26,0,0),
 		xalign = Enum.TextXAlignment.Center, z=1, parent = hdr,
 	})
 
@@ -644,10 +630,10 @@ local function mkSection(order, title, defaultOpen)
 	mkCorner(content, 6)
 
 	local cLayout = Instance.new("UIListLayout")
-	cLayout.Padding = UDim.new(0,4)
+	cLayout.Padding = UDim.new(0,3)
 	cLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	cLayout.Parent = content
-	mkPad(content, 6,6,6,6)
+	mkPad(content, 5,5,5,5)
 
 	local open = defaultOpen ~= false
 	local function toggle()
@@ -703,13 +689,13 @@ mkCorner(toggleRow, 6)
 mkLabel({
 	text = "Auto Watering",
 	size = FONT_LG, font = Enum.Font.GothamBold, color = C.text,
-	sz = UDim2.new(0.6,0,1,0), pos = UDim2.new(0,12,0,0),
+	sz = UDim2.new(0.6,0,1,0), pos = UDim2.new(0,10,0,0),
 	parent = toggleRow,
 })
 
 local ToggleBtn = Instance.new("TextButton")
-ToggleBtn.Size = UDim2.new(0,70,0,BTN_H)
-ToggleBtn.Position = UDim2.new(1,-(70+10),0.5,-BTN_H/2)
+ToggleBtn.Size = UDim2.new(0,60,0,BTN_H)
+ToggleBtn.Position = UDim2.new(1,-(60+8),0.5,-BTN_H/2)
 ToggleBtn.BackgroundColor3 = C.red
 ToggleBtn.Text = "OFF"
 ToggleBtn.TextColor3 = C.text
@@ -719,51 +705,17 @@ ToggleBtn.BorderSizePixel = 0
 ToggleBtn.Parent = toggleRow
 mkCorner(ToggleBtn, 6)
 
-
 -- ════════════════════════════════════════════════════════════
 -- SECTIONS
 -- ════════════════════════════════════════════════════════════
-local PlotContent  = mkSection(3, "🌍  Select Target Plot", true)
-local SeedContent  = mkSection(4, "🌱  Filter by Plant Type", true)
-local SettContent  = mkSection(5, "⚙️  Settings", false)
-local StatsContent = mkSection(6, "📊  Stats", true)
+local PlotContent  = mkSection(3, "🌍 Select Target Plot", true)
+local SeedContent  = mkSection(4, "🌱 Filter by Plant Type", true)
+local SettContent  = mkSection(5, "⚙️ Settings", false)
+local StatsContent = mkSection(6, "📊 Stats", true)
 
 -- ── Settings rows
--- Delete Plants row (in Settings)
-local deleteRow = Instance.new("Frame")
-deleteRow.LayoutOrder = 3
-deleteRow.Size = UDim2.new(1,0,0,ROW_H)
-deleteRow.BackgroundTransparency = 1
-deleteRow.Parent = SettContent
 
-mkLabel({
-	text = "Keep 1, Remove Rest", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-	sz = UDim2.new(0.55,0,1,0), pos = UDim2.new(0,2,0,0), parent = deleteRow,
-})
-
-local DeleteBtn = Instance.new("TextButton")
-DeleteBtn.Size = UDim2.new(0.42,0,0,BTN_H)
-DeleteBtn.Position = UDim2.new(0.57,0,0.5,-BTN_H/2)
-DeleteBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
-DeleteBtn.Text = "🗑️ Delete"
-DeleteBtn.TextColor3 = C.text
-DeleteBtn.Font = Enum.Font.GothamBold
-DeleteBtn.TextSize = FONT_MD
-DeleteBtn.BorderSizePixel = 0
-DeleteBtn.Parent = deleteRow
-mkCorner(DeleteBtn, 6)
-
-DeleteBtn.MouseButton1Click:Connect(forceDeletePlants)
-DeleteBtn.TouchTap:Connect(forceDeletePlants)
-
-DeleteBtn.MouseEnter:Connect(function()
-	DeleteBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-end)
-DeleteBtn.MouseLeave:Connect(function()
-	DeleteBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
-end)
-
--- Delay
+-- Water Delay
 local delayRow = Instance.new("Frame")
 delayRow.LayoutOrder = 1
 delayRow.Size = UDim2.new(1,0,0,ROW_H)
@@ -786,9 +738,10 @@ delayBox.TextSize = FONT_MD
 delayBox.Font = Enum.Font.Gotham
 delayBox.ClearTextOnFocus = false
 delayBox.Parent = delayRow
-mkCorner(delayBox, 5); mkPad(delayBox, 8)
+mkCorner(delayBox, 5)
+mkPad(delayBox, 6)
 
--- Auto TP toggle row
+-- Auto TP toggle
 local tpRow = Instance.new("Frame")
 tpRow.LayoutOrder = 2
 tpRow.Size = UDim2.new(1,0,0,ROW_H)
@@ -801,8 +754,8 @@ mkLabel({
 })
 
 local tpBtn = Instance.new("TextButton")
-tpBtn.Size = UDim2.new(0,60,0,BTN_H)
-tpBtn.Position = UDim2.new(1,-(60+2),0.5,-BTN_H/2)
+tpBtn.Size = UDim2.new(0,50,0,BTN_H)
+tpBtn.Position = UDim2.new(1,-(50+2),0.5,-BTN_H/2)
 tpBtn.BackgroundColor3 = C.green
 tpBtn.Text = "ON"
 tpBtn.TextColor3 = C.text
@@ -820,10 +773,43 @@ end
 tpBtn.MouseButton1Click:Connect(toggleTP)
 tpBtn.TouchTap:Connect(toggleTP)
 
+-- Delete Plants (Keep 1)
+local deleteRow = Instance.new("Frame")
+deleteRow.LayoutOrder = 3
+deleteRow.Size = UDim2.new(1,0,0,ROW_H)
+deleteRow.BackgroundTransparency = 1
+deleteRow.Parent = SettContent
+
+mkLabel({
+	text = "Keep 1, Remove Rest", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
+	sz = UDim2.new(0.52,0,1,0), pos = UDim2.new(0,2,0,0), parent = deleteRow,
+})
+
+local DeleteBtn = Instance.new("TextButton")
+DeleteBtn.Size = UDim2.new(0.45,0,0,BTN_H)
+DeleteBtn.Position = UDim2.new(0.54,0,0.5,-BTN_H/2)
+DeleteBtn.BackgroundColor3 = Color3.fromRGB(160,40,40)
+DeleteBtn.Text = "🗑️ Delete"
+DeleteBtn.TextColor3 = C.text
+DeleteBtn.Font = Enum.Font.GothamBold
+DeleteBtn.TextSize = FONT_MD
+DeleteBtn.BorderSizePixel = 0
+DeleteBtn.Parent = deleteRow
+mkCorner(DeleteBtn, 6)
+
+DeleteBtn.MouseButton1Click:Connect(forceDeletePlants)
+DeleteBtn.TouchTap:Connect(forceDeletePlants)
+DeleteBtn.MouseEnter:Connect(function()
+	DeleteBtn.BackgroundColor3 = Color3.fromRGB(200,50,50)
+end)
+DeleteBtn.MouseLeave:Connect(function()
+	DeleteBtn.BackgroundColor3 = Color3.fromRGB(160,40,40)
+end)
+
 -- Stats label
 local statsLabel = Instance.new("TextLabel")
 statsLabel.LayoutOrder = 1
-statsLabel.Size = UDim2.new(1,0,0,isMobile and 120 or 100)
+statsLabel.Size = UDim2.new(1,0,0,isMobile and 90 or 100)
 statsLabel.BackgroundTransparency = 1
 statsLabel.TextColor3 = C.sub
 statsLabel.TextSize = FONT_SM
@@ -886,7 +872,7 @@ rebuildSeedButtons = function()
 	mkLabel({
 		text = "🌿  All Plants",
 		size = FONT_MD, font = Enum.Font.GothamBold, color = C.green,
-		sz = UDim2.new(1,0,1,0), pos = UDim2.new(0,10,0,0),
+		sz = UDim2.new(1,0,1,0), pos = UDim2.new(0,8,0,0),
 		parent = allBtn,
 	})
 	seedButtons[""] = allBtn
@@ -898,7 +884,7 @@ rebuildSeedButtons = function()
 		local empty = mkLabel({
 			text = "  No plants in this plot",
 			size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-			sz = UDim2.new(1,0,0,28), parent = SeedContent,
+			sz = UDim2.new(1,0,0,26), parent = SeedContent,
 		})
 		empty.LayoutOrder = 2
 		return
@@ -922,7 +908,7 @@ rebuildSeedButtons = function()
 		mkLabel({
 			text = "🌸  " .. seedName,
 			size = FONT_MD, font = Enum.Font.Gotham, color = C.text,
-			sz = UDim2.new(0.72,0,1,0), pos = UDim2.new(0,10,0,0),
+			sz = UDim2.new(0.72,0,1,0), pos = UDim2.new(0,8,0,0),
 			parent = btn,
 		})
 		mkLabel({
@@ -948,21 +934,21 @@ local function buildPlotButton(plot, order)
 
 	local nameLabel = mkLabel({
 		text = "", size = FONT_MD, font = Enum.Font.GothamBold, color = C.text,
-		sz = UDim2.new(0.62,0,0.55,0), pos = UDim2.new(0,10,0,4),
+		sz = UDim2.new(0.65,0,0.55,0), pos = UDim2.new(0,8,0,3),
 		parent = btn,
 	})
 	local ownerLabel = mkLabel({
 		text = "", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-		sz = UDim2.new(0.62,0,0.4,0), pos = UDim2.new(0,10,0.58,0),
+		sz = UDim2.new(0.65,0,0.4,0), pos = UDim2.new(0,8,0.58,0),
 		parent = btn,
 	})
 	local cntLabel = mkLabel({
 		text = "—", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-		sz = UDim2.new(0.34,0,1,0), pos = UDim2.new(0.66,0,0,0),
+		sz = UDim2.new(0.32,0,1,0), pos = UDim2.new(0.67,0,0,0),
 		xalign = Enum.TextXAlignment.Right,
 		parent = btn,
 	})
-	mkPad(cntLabel, 0, 8)
+	mkPad(cntLabel, 0, 6)
 
 	local function refresh()
 		local myId = LocalPlayer:GetAttribute("PlotId")
@@ -1088,10 +1074,10 @@ RunService.RenderStepped:Connect(function()
 	local plotName   = STATE.selectedPlotObj and STATE.selectedPlotObj.Name or "None"
 	local seedFilter = STATE.selectedSeedName or "All"
 	local can        = getWateringCan()
-	local canStatus  = can and "🪣 Super Watering Can ✓" or "❌ No Super Watering Can"
+	local canStatus  = can and "🪣 Can ✓" or "❌ No Watering Can"
 	local tpStatus   = CONFIG.autoTP and "✅ ON" or "❌ OFF"
 	statsLabel.Text = string.format(
-		"Plot:      %s\nFilter:    %s\nFound:    %d plants\nWatered: %d\nDelay:     %.2fs\nAuto TP:  %s\n%s",
+		"Plot:     %s\nFilter:   %s\nFound:   %d plants\nWatered: %d\nDelay:    %.2fs\nAutoTP:  %s\n%s",
 		plotName, seedFilter,
 		STATE.plantsFound, STATE.plantsWatered,
 		CONFIG.waterDelay, tpStatus, canStatus
@@ -1100,73 +1086,72 @@ RunService.RenderStepped:Connect(function()
 	StatusLabel.TextColor3 = CONFIG.enabled and C.green or C.sub
 end)
 
--- ── Draggable
--- ── Draggable
+-- ════════════════════════════════════════════════════════════
+-- DRAGGABLE (mouse + mobile touch)
+-- ════════════════════════════════════════════════════════════
+-- ════════════════════════════════════════════════════════════
+-- DRAGGABLE (mouse + mobile touch)
+-- ════════════════════════════════════════════════════════════
 do
 	local dragging = false
 	local dragStartPos = Vector2.new(0, 0)
-	local winStartPos = UDim2.new(0, 0, 0, 0)
+	local winStartX = 0
+	local winStartY = 0
 
 	local function onDragStart(pos)
 		dragging = true
 		dragStartPos = Vector2.new(pos.X, pos.Y)
-		winStartPos = Win.Position
+		-- snapshot absolute pixel position at drag start
+		winStartX = Win.AbsolutePosition.X
+		winStartY = Win.AbsolutePosition.Y
 	end
 
 	local function onDragMove(pos)
 		if not dragging then return end
 		local delta = Vector2.new(pos.X, pos.Y) - dragStartPos
-		local newX = winStartPos.X.Offset + delta.X
-		local newY = winStartPos.Y.Offset + delta.Y
-
-		-- clamp so window stays on screen
+		local newX = winStartX + delta.X
+		local newY = winStartY + delta.Y
 		local screenSize = workspace.CurrentCamera.ViewportSize
 		local winSize = Win.AbsoluteSize
+		-- clamp so window can't go off any edge
 		newX = math.clamp(newX, 0, screenSize.X - winSize.X)
 		newY = math.clamp(newY, 0, screenSize.Y - winSize.Y)
-
-		Win.Position = UDim2.new(
-			winStartPos.X.Scale, newX,
-			winStartPos.Y.Scale, newY
-		)
+		-- use pure offset (Scale = 0) so there's no conflict
+		Win.Position = UDim2.fromOffset(newX, newY)
 	end
 
 	local function onDragEnd()
 		dragging = false
 	end
 
-	-- Mouse drag
+	-- Mouse
 	TitleBar.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
 			onDragStart(input.Position)
 		end
 	end)
-
 	UserInputService.InputChanged:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseMovement then
 			onDragMove(input.Position)
 		end
 	end)
-
 	UserInputService.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
 			onDragEnd()
 		end
 	end)
 
-	-- Mobile touch drag (fixed)
+	-- Touch
 	TitleBar.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch then
 			onDragStart(input.Position)
 		end
 	end)
-
 	TitleBar.InputChanged:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch then
 			onDragMove(input.Position)
 		end
 	end)
-
 	TitleBar.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch then
 			onDragEnd()
@@ -1174,7 +1159,15 @@ do
 	end)
 end
 
+
+if not isMobile then
+	UserInputService.InputBegan:Connect(function(input, processed)
+		if processed then return end
+		if input.KeyCode == Enum.KeyCode.RightShift then
+			toggleWindow()
+		end
+	end)
+end
+
 print("[💧 Auto Watering Can] Loaded!")
 if not isMobile then print("[⏱️] RightShift = toggle UI") end
-
-	
