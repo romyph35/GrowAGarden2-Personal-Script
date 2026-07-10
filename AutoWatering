@@ -5,7 +5,6 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local CollectionService = game:GetService("CollectionService")
 local TeleportService = game:GetService("TeleportService")
-
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
@@ -19,18 +18,18 @@ LocalPlayer.CharacterAdded:Connect(function(c) Character = c end)
 -- Safe require with retry
 local Networking
 do
-    local ok, result
-    for _ = 1, 10 do
-        ok, result = pcall(function()
-            return require(ReplicatedStorage:WaitForChild("SharedModules", 10):WaitForChild("Networking", 10))
-        end)
-        if ok and result then Networking = result; break end
-        task.wait(1)
-    end
-    if not Networking then
-        warn("[AutoWater] Failed to load Networking module")
-        return
-    end
+	local ok, result
+	for _ = 1, 10 do
+		ok, result = pcall(function()
+			return require(ReplicatedStorage:WaitForChild("SharedModules", 10):WaitForChild("Networking", 10))
+		end)
+		if ok and result then Networking = result; break end
+		task.wait(1)
+	end
+	if not Networking then
+		warn("[AutoWater] Failed to load Networking module")
+		return
+	end
 end
 
 -- ════════════════════════════════════════════════════════════
@@ -50,21 +49,21 @@ local BTN_H   = isMobile and 38 or 28
 -- CONFIG & STATE
 -- ════════════════════════════════════════════════════════════
 local CONFIG = {
-    enabled       = false,
-    waterDelay    = 0.5,
-    checkInterval = 0.1,
-    autoTP        = true,   -- teleport to plant before watering
-    tpOffset      = 4,      -- studs away from plant when TPing
+	enabled       = false,
+	waterDelay    = 0.5,
+	checkInterval = 0.1,
+	autoTP        = true,
+	tpOffset      = 4,
 }
 
 local STATE = {
-    selectedPlotObj  = nil,
-    selectedSeedName = nil,
-    lastWaterTime    = 0,
-    wateredPlants    = {},
-    statusMessage    = "Loading...",
-    plantsWatered    = 0,
-    plantsFound      = 0,
+	selectedPlotObj  = nil,
+	selectedSeedName = nil,
+	lastWaterTime    = 0,
+	wateredPlants    = {},
+	statusMessage    = "Loading...",
+	plantsWatered    = 0,
+	plantsFound      = 0,
 }
 
 -- ════════════════════════════════════════════════════════════
@@ -72,265 +71,241 @@ local STATE = {
 -- ════════════════════════════════════════════════════════════
 local Gardens
 do
-    for _ = 1, 30 do
-        Gardens = workspace:FindFirstChild("Gardens")
-        if Gardens then break end
-        task.wait(1)
-    end
-    if not Gardens then
-        warn("[AutoWater] Gardens not found")
-        return
-    end
+	for _ = 1, 30 do
+		Gardens = workspace:FindFirstChild("Gardens")
+		if Gardens then break end
+		task.wait(1)
+	end
+	if not Gardens then
+		warn("[AutoWater] Gardens not found")
+		return
+	end
 end
 
 -- ════════════════════════════════════════════════════════════
 -- UTILITIES
 -- ════════════════════════════════════════════════════════════
 local function getTargetPlot()
-    if STATE.selectedPlotObj and STATE.selectedPlotObj.Parent then
-        return STATE.selectedPlotObj
-    end
-    local plotId = LocalPlayer:GetAttribute("PlotId")
-    if not plotId then return nil end
-    return Gardens:FindFirstChild("Plot" .. tostring(plotId))
+	if STATE.selectedPlotObj and STATE.selectedPlotObj.Parent then
+		return STATE.selectedPlotObj
+	end
+	local plotId = LocalPlayer:GetAttribute("PlotId")
+	if not plotId then return nil end
+	return Gardens:FindFirstChild("Plot" .. tostring(plotId))
 end
 
 local function getPlantPosition(plant)
-    if plant:IsA("BasePart") then return plant.Position end
-    if plant.PrimaryPart then return plant.PrimaryPart.Position end
-    for _, d in plant:GetDescendants() do
-        if d:IsA("BasePart") then return d.Position end
-    end
-    return nil
+	if plant:IsA("BasePart") then return plant.Position end
+	if plant.PrimaryPart then return plant.PrimaryPart.Position end
+	for _, d in plant:GetDescendants() do
+		if d:IsA("BasePart") then return d.Position end
+	end
+	return nil
 end
 
 local function getWateringCan()
-    if Character then
-        for _, item in Character:GetChildren() do
-            if item:IsA("Tool") and item:GetAttribute("WateringCan") == "Super Watering Can" then
-                return item
-            end
-        end
-    end
-    local backpack = LocalPlayer:FindFirstChild("Backpack")
-    if backpack then
-        for _, item in backpack:GetChildren() do
-            if item:IsA("Tool") and item:GetAttribute("WateringCan") == "Super Watering Can" then
-                return item
-            end
-        end
-    end
-    return nil
+	if Character then
+		for _, item in Character:GetChildren() do
+			if item:IsA("Tool") and item:GetAttribute("WateringCan") == "Super Watering Can" then
+				return item
+			end
+		end
+	end
+	local backpack = LocalPlayer:FindFirstChild("Backpack")
+	if backpack then
+		for _, item in backpack:GetChildren() do
+			if item:IsA("Tool") and item:GetAttribute("WateringCan") == "Super Watering Can" then
+				return item
+			end
+		end
+	end
+	return nil
 end
 
 local function equipWateringCan()
-    if Character then
-        for _, item in Character:GetChildren() do
-            if item:IsA("Tool") and item:GetAttribute("WateringCan") == "Super Watering Can" then
-                return item
-            end
-        end
-    end
-    local backpack = LocalPlayer:FindFirstChild("Backpack")
-    if not backpack then return nil end
-    for _, item in backpack:GetChildren() do
-        if item:IsA("Tool") and item:GetAttribute("WateringCan") == "Super Watering Can" then
-            pcall(function() item.Parent = Character end)
-            task.wait(0.05)
-            if Character and Character:FindFirstChild(item.Name) then return item end
-        end
-    end
-    return nil
+	if Character then
+		for _, item in Character:GetChildren() do
+			if item:IsA("Tool") and item:GetAttribute("WateringCan") == "Super Watering Can" then
+				return item
+			end
+		end
+	end
+	local backpack = LocalPlayer:FindFirstChild("Backpack")
+	if not backpack then return nil end
+	for _, item in backpack:GetChildren() do
+		if item:IsA("Tool") and item:GetAttribute("WateringCan") == "Super Watering Can" then
+			pcall(function() item.Parent = Character end)
+			task.wait(0.05)
+			if Character and Character:FindFirstChild(item.Name) then return item end
+		end
+	end
+	return nil
 end
 
 local function createRaycastParams()
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Include
-    local tagged = CollectionService:GetTagged("PlantArea")
-    local baseplate = workspace:FindFirstChild("Baseplate")
-    if baseplate then table.insert(tagged, baseplate) end
-    params.FilterDescendantsInstances = tagged
-    return params
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	local tagged = CollectionService:GetTagged("PlantArea")
+	local baseplate = workspace:FindFirstChild("Baseplate")
+	if baseplate then table.insert(tagged, baseplate) end
+	params.FilterDescendantsInstances = tagged
+	return params
 end
 
 local function needsWatering(plant)
-    return (plant:GetAttribute("WateringLevel") or 0) < 50
+	return (plant:GetAttribute("WateringLevel") or 0) < 50
 end
 
 local function getTargetPlants(plot)
-    if not plot then return {} end
-    local folder = plot:FindFirstChild("Plants")
-    if not folder then return {} end
-    local result = {}
-    for _, plant in folder:GetChildren() do
-        local seed = plant:GetAttribute("SeedName")
-        if seed then
-            if STATE.selectedSeedName == nil or STATE.selectedSeedName == seed then
-                table.insert(result, plant)
-            end
-        end
-    end
-    return result
+	if not plot then return {} end
+	local folder = plot:FindFirstChild("Plants")
+	if not folder then return {} end
+	local result = {}
+	for _, plant in folder:GetChildren() do
+		local seed = plant:GetAttribute("SeedName")
+		if seed then
+			if STATE.selectedSeedName == nil or STATE.selectedSeedName == seed then
+				table.insert(result, plant)
+			end
+		end
+	end
+	return result
 end
 
 local function getSeedNamesInPlot(plot)
-    if not plot then return {} end
-    local folder = plot:FindFirstChild("Plants")
-    if not folder then return {} end
-    local seen, names = {}, {}
-    for _, plant in folder:GetChildren() do
-        local seed = plant:GetAttribute("SeedName")
-        if seed and not seen[seed] then
-            seen[seed] = true
-            table.insert(names, seed)
-        end
-    end
-    table.sort(names)
-    return names
+	if not plot then return {} end
+	local folder = plot:FindFirstChild("Plants")
+	if not folder then return {} end
+	local seen, names = {}, {}
+	for _, plant in folder:GetChildren() do
+		local seed = plant:GetAttribute("SeedName")
+		if seed and not seen[seed] then
+			seen[seed] = true
+			table.insert(names, seed)
+		end
+	end
+	table.sort(names)
+	return names
 end
 
 -- ════════════════════════════════════════════════════════════
 -- AUTO TP
 -- ════════════════════════════════════════════════════════════
 local function teleportToPlant(plant)
-    if not CONFIG.autoTP then return end
-    if not Character then return end
-    local hrp = Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    local pos = getPlantPosition(plant)
-    if not pos then return end
-
-    -- Place character next to the plant, slightly above ground
-    local offset = Vector3.new(CONFIG.tpOffset, 3, 0)
-    local targetCF = CFrame.new(pos + offset, pos)
-
-    pcall(function()
-        hrp.CFrame = targetCF
-    end)
-    task.wait(0.1)
+	if not CONFIG.autoTP then return end
+	if not Character then return end
+	local hrp = Character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	local pos = getPlantPosition(plant)
+	if not pos then return end
+	local offset = Vector3.new(CONFIG.tpOffset, 3, 0)
+	local targetCF = CFrame.new(pos + offset, pos)
+	pcall(function() hrp.CFrame = targetCF end)
+	task.wait(0.1)
 end
 
 -- ════════════════════════════════════════════════════════════
 -- WATERING
 -- ════════════════════════════════════════════════════════════
 local function waterPlant(plant)
-    if not plant or not plant.Parent then return false end
-    if STATE.wateredPlants[plant] then return false end
-    if not needsWatering(plant) then return false end
+	if not plant or not plant.Parent then return false end
+	if STATE.wateredPlants[plant] then return false end
+	if not needsWatering(plant) then return false end
+	local now = os.clock()
+	if now - STATE.lastWaterTime < CONFIG.waterDelay then return false end
 
-    local now = os.clock()
-    if now - STATE.lastWaterTime < CONFIG.waterDelay then return false end
+	teleportToPlant(plant)
 
-    -- TP to plant first
-    teleportToPlant(plant)
+	local can = getWateringCan()
+	if not can then can = equipWateringCan() end
+	if not can then
+		STATE.statusMessage = "❌ No Super Watering Can found"
+		return false
+	end
 
-    local can = getWateringCan()
-    if not can then can = equipWateringCan() end
-    if not can then
-        STATE.statusMessage = "❌ No Super Watering Can found"
-        return false
-    end
-    local canName = can:GetAttribute("WateringCan")
-    if not canName then return false end
+	local canName = can:GetAttribute("WateringCan")
+	if not canName then return false end
 
-    local worldPos = getPlantPosition(plant)
-    if not worldPos then return false end
+	local worldPos = getPlantPosition(plant)
+	if not worldPos then return false end
 
-    local params = createRaycastParams()
-    local result = workspace:Raycast(
-        worldPos + Vector3.new(0,10,0),
-        Vector3.new(0,-50,0),
-        params
-    )
+	local params = createRaycastParams()
+	local result = workspace:Raycast(worldPos + Vector3.new(0,10,0), Vector3.new(0,-50,0), params)
+	local hitPos
+	if result then
+		hitPos = CollectionService:HasTag(result.Instance, "PlantArea")
+			and result.Position
+			or Vector3.new(worldPos.X, result.Position.Y, worldPos.Z)
+	else
+		hitPos = Vector3.new(worldPos.X, worldPos.Y - 1, worldPos.Z)
+	end
 
-    local hitPos
-    if result then
-        hitPos = CollectionService:HasTag(result.Instance, "PlantArea")
-            and result.Position
-            or Vector3.new(worldPos.X, result.Position.Y, worldPos.Z)
-    else
-        hitPos = Vector3.new(worldPos.X, worldPos.Y - 1, worldPos.Z)
-    end
+	local ok = pcall(function()
+		Networking.WateringCan.UseWateringCan:Fire(hitPos - Vector3.new(0, 0.3, 0), canName, can)
+	end)
 
-    local ok = pcall(function()
-        Networking.WateringCan.UseWateringCan:Fire(
-            hitPos - Vector3.new(0, 0.3, 0),
-            canName,
-            can
-        )
-    end)
-
-    if ok then
-        STATE.wateredPlants[plant] = true
-        STATE.lastWaterTime = now
-        STATE.plantsWatered += 1
-        return true
-    end
-    return false
+	if ok then
+		STATE.wateredPlants[plant] = true
+		STATE.lastWaterTime = now
+		STATE.plantsWatered += 1
+		return true
+	end
+	return false
 end
 
 -- Auto-equip watcher
 local lastEquipCheck = 0
 RunService.Heartbeat:Connect(function()
-    if not CONFIG.enabled then return end
-    local now = os.clock()
-    if now - lastEquipCheck < 0.5 then return end
-    lastEquipCheck = now
-    if Character then
-        for _, item in Character:GetChildren() do
-            if item:IsA("Tool") and item:GetAttribute("WateringCan") == "Super Watering Can" then
-                return
-            end
-        end
-    end
-    local backpack = LocalPlayer:FindFirstChild("Backpack")
-    if not backpack then return end
-    for _, item in backpack:GetChildren() do
-        if item:IsA("Tool") and item:GetAttribute("WateringCan") == "Super Watering Can" then
-            pcall(function() item.Parent = Character end)
-            STATE.statusMessage = "🪣 Auto-equipped Super Watering Can"
-            return
-        end
-    end
-    STATE.statusMessage = "❌ No Super Watering Can in backpack"
+	if not CONFIG.enabled then return end
+	local now = os.clock()
+	if now - lastEquipCheck < 0.5 then return end
+	lastEquipCheck = now
+	if Character then
+		for _, item in Character:GetChildren() do
+			if item:IsA("Tool") and item:GetAttribute("WateringCan") == "Super Watering Can" then return end
+		end
+	end
+	local backpack = LocalPlayer:FindFirstChild("Backpack")
+	if not backpack then return end
+	for _, item in backpack:GetChildren() do
+		if item:IsA("Tool") and item:GetAttribute("WateringCan") == "Super Watering Can" then
+			pcall(function() item.Parent = Character end)
+			STATE.statusMessage = "🪣 Auto-equipped Super Watering Can"
+			return
+		end
+	end
+	STATE.statusMessage = "❌ No Super Watering Can in backpack"
 end)
 
 -- Main water loop
 local lastTick = 0
 RunService.Heartbeat:Connect(function()
-    if not CONFIG.enabled then return end
-    local now = os.clock()
-    if now - lastTick < CONFIG.checkInterval then return end
-    lastTick = now
-
-    local plot = getTargetPlot()
-    if not plot then
-        STATE.statusMessage = "❌ No plot selected"
-        return
-    end
-
-    local plants = getTargetPlants(plot)
-    STATE.plantsFound = #plants
-
-    if #plants == 0 then
-        local f = STATE.selectedSeedName and (" (" .. STATE.selectedSeedName .. ")") or ""
-        STATE.statusMessage = "📭 No plants found" .. f
-        return
-    end
-
-    for _, plant in ipairs(plants) do
-        if waterPlant(plant) then
-            local seed = plant:GetAttribute("SeedName") or "plant"
-            STATE.statusMessage = "💧 Watering " .. seed .. " in " .. plot.Name
-            return
-        end
-    end
-
-    -- Full loop done — restart
-    STATE.wateredPlants = {}
-    STATE.plantsWatered = 0
-    STATE.statusMessage = "🔄 Restarting loop..."
+	if not CONFIG.enabled then return end
+	local now = os.clock()
+	if now - lastTick < CONFIG.checkInterval then return end
+	lastTick = now
+	local plot = getTargetPlot()
+	if not plot then
+		STATE.statusMessage = "❌ No plot selected"
+		return
+	end
+	local plants = getTargetPlants(plot)
+	STATE.plantsFound = #plants
+	if #plants == 0 then
+		local f = STATE.selectedSeedName and (" (" .. STATE.selectedSeedName .. ")") or ""
+		STATE.statusMessage = "📭 No plants found" .. f
+		return
+	end
+	for _, plant in ipairs(plants) do
+		if waterPlant(plant) then
+			local seed = plant:GetAttribute("SeedName") or "plant"
+			STATE.statusMessage = "💧 Watering " .. seed .. " in " .. plot.Name
+			return
+		end
+	end
+	STATE.wateredPlants = {}
+	STATE.plantsWatered = 0
+	STATE.statusMessage = "🔄 Restarting loop..."
 end)
 
 -- ════════════════════════════════════════════════════════════
@@ -347,50 +322,52 @@ ScreenGui.IgnoreGuiInset = true
 ScreenGui.Parent = PlayerGui
 
 local C = {
-    bg      = Color3.fromRGB(20, 20, 20),
-    panel   = Color3.fromRGB(28, 28, 30),
-    section = Color3.fromRGB(35, 35, 38),
-    text    = Color3.fromRGB(255, 255, 255),
-    sub     = Color3.fromRGB(160, 160, 165),
-    accent  = Color3.fromRGB(88, 145, 255),
-    green   = Color3.fromRGB(80, 220, 100),
-    red     = Color3.fromRGB(220, 70, 70),
-    border  = Color3.fromRGB(55, 55, 60),
-    item    = Color3.fromRGB(38, 38, 42),
-    itemSel = Color3.fromRGB(45, 75, 160),
-    itemHov = Color3.fromRGB(48, 48, 54),
-    seedSel = Color3.fromRGB(35, 90, 55),
-    topBtn  = Color3.fromRGB(50, 50, 55),
+	bg      = Color3.fromRGB(20, 20, 20),
+	panel   = Color3.fromRGB(28, 28, 30),
+	section = Color3.fromRGB(35, 35, 38),
+	text    = Color3.fromRGB(255, 255, 255),
+	sub     = Color3.fromRGB(160, 160, 165),
+	accent  = Color3.fromRGB(88, 145, 255),
+	green   = Color3.fromRGB(80, 220, 100),
+	red     = Color3.fromRGB(220, 70, 70),
+	border  = Color3.fromRGB(55, 55, 60),
+	item    = Color3.fromRGB(38, 38, 42),
+	itemSel = Color3.fromRGB(45, 75, 160),
+	itemHov = Color3.fromRGB(48, 48, 54),
+	seedSel = Color3.fromRGB(35, 90, 55),
+	topBtn  = Color3.fromRGB(50, 50, 55),
 }
 
 local function mkCorner(obj, r)
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, r or 6)
-    c.Parent = obj
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, r or 6)
+	c.Parent = obj
 end
+
 local function mkPad(obj, l, r, t, b)
-    local p = Instance.new("UIPadding")
-    p.PaddingLeft   = UDim.new(0, l or 0)
-    p.PaddingRight  = UDim.new(0, r or 0)
-    p.PaddingTop    = UDim.new(0, t or 0)
-    p.PaddingBottom = UDim.new(0, b or 0)
-    p.Parent = obj
+	local p = Instance.new("UIPadding")
+	p.PaddingLeft   = UDim.new(0, l or 0)
+	p.PaddingRight  = UDim.new(0, r or 0)
+	p.PaddingTop    = UDim.new(0, t or 0)
+	p.PaddingBottom = UDim.new(0, b or 0)
+	p.Parent = obj
 end
+
 local function mkLabel(props)
-    local l = Instance.new("TextLabel")
-    l.BackgroundTransparency = 1
-    l.Font = props.font or Enum.Font.GothamBold
-    l.TextSize = props.size or FONT_MD
-    l.TextColor3 = props.color or C.text
-    l.TextXAlignment = props.xalign or Enum.TextXAlignment.Left
-    l.TextYAlignment = props.yalign or Enum.TextYAlignment.Center
-    l.TextTruncate = Enum.TextTruncate.AtEnd
-    l.Text = props.text or ""
-    l.Size = props.sz or UDim2.new(1,0,1,0)
-    l.Position = props.pos or UDim2.new(0,0,0,0)
-    l.ZIndex = props.z or 1
-    if props.parent then l.Parent = props.parent end
-    return l
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Font = props.font or Enum.Font.GothamBold
+	l.TextSize = props.size or FONT_MD
+	l.TextColor3 = props.color or C.text
+	l.TextXAlignment = props.xalign or Enum.TextXAlignment.Left
+	l.TextYAlignment = props.yalign or Enum.TextYAlignment.Center
+	l.TextTruncate = Enum.TextTruncate.AtEnd
+	l.Text = props.text or ""
+	l.Size = props.sz or UDim2.new(1,0,1,0)
+	l.Position = props.pos or UDim2.new(0,0,0,0)
+	l.ZIndex = props.z or 1
+	if props.parent then l.Parent = props.parent end
+	return l
 end
 
 -- ── Root
@@ -399,6 +376,30 @@ Root.BackgroundTransparency = 1
 Root.Size = UDim2.new(1,0,1,0)
 Root.Parent = ScreenGui
 
+-- ════════════════════════════════════════════════════════════
+-- OPEN/CLOSE TOGGLE BUTTON (floating, always visible)
+-- ════════════════════════════════════════════════════════════
+local OpenCloseBtn = Instance.new("TextButton")
+OpenCloseBtn.Name = "OpenCloseBtn"
+OpenCloseBtn.Size = UDim2.new(0, 110, 0, 34)
+OpenCloseBtn.Position = isMobile
+	and UDim2.new(0.5, -55, 0, 8)   -- top-center on mobile
+	or  UDim2.new(0, 24, 0, 8)      -- top-left on desktop (above the window)
+OpenCloseBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 34)
+OpenCloseBtn.Text = "💧 Close UI"
+OpenCloseBtn.TextColor3 = C.text
+OpenCloseBtn.Font = Enum.Font.GothamBold
+OpenCloseBtn.TextSize = FONT_MD
+OpenCloseBtn.BorderSizePixel = 0
+OpenCloseBtn.ZIndex = 200
+OpenCloseBtn.Parent = Root
+mkCorner(OpenCloseBtn, 8)
+
+local btnStroke = Instance.new("UIStroke")
+btnStroke.Color = C.border
+btnStroke.Thickness = 1.2
+btnStroke.Parent = OpenCloseBtn
+
 -- ── Window
 local Win = Instance.new("Frame")
 Win.Name = "Window"
@@ -406,38 +407,70 @@ Win.BackgroundColor3 = C.panel
 Win.BorderSizePixel = 0
 Win.ClipsDescendants = true
 Win.Parent = Root
+
 if isMobile then
-    Win.Size = UDim2.new(BASE_W,0,BASE_H,0)
-    Win.Position = UDim2.new((1-BASE_W)/2,0,(1-BASE_H)/2,0)
+	Win.Size = UDim2.new(BASE_W, 0, BASE_H, 0)
+	Win.Position = UDim2.new((1-BASE_W)/2, 0, (1-BASE_H)/2, 0)
 else
-    Win.Size = UDim2.new(0,BASE_W,0,BASE_H)
-    Win.Position = UDim2.new(0,24,0,24)
+	Win.Size = UDim2.new(0, BASE_W, 0, BASE_H)
+	Win.Position = UDim2.new(0, 24, 0, 50) -- offset down to make room for the toggle button
 end
+
 mkCorner(Win, 10)
+
 local winStroke = Instance.new("UIStroke")
 winStroke.Color = C.border
 winStroke.Thickness = 1.2
 winStroke.Parent = Win
 
+-- Open/Close button logic
+local winVisible = true
+
+local function updateOpenCloseBtn()
+	if winVisible then
+		OpenCloseBtn.Text = "💧 Close UI"
+		OpenCloseBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 34)
+	else
+		OpenCloseBtn.Text = "💧 Open UI"
+		OpenCloseBtn.BackgroundColor3 = Color3.fromRGB(45, 75, 160)
+	end
+end
+
+local function toggleWindow()
+	winVisible = not winVisible
+	Win.Visible = winVisible
+	updateOpenCloseBtn()
+end
+
+OpenCloseBtn.MouseButton1Click:Connect(toggleWindow)
+OpenCloseBtn.TouchTap:Connect(toggleWindow)
+
+OpenCloseBtn.MouseEnter:Connect(function()
+	OpenCloseBtn.BackgroundColor3 = Color3.fromRGB(55, 55, 65)
+end)
+OpenCloseBtn.MouseLeave:Connect(function()
+	updateOpenCloseBtn()
+end)
+
 -- ── Title bar
 local TitleBar = Instance.new("Frame")
-TitleBar.Size = UDim2.new(1,0,0,HDR_H)
+TitleBar.Size = UDim2.new(1, 0, 0, HDR_H)
 TitleBar.BackgroundColor3 = C.panel
 TitleBar.BorderSizePixel = 0
 TitleBar.ZIndex = 2
 TitleBar.Parent = Win
 
 mkLabel({
-    text = "💧 Auto Watering Can",
-    size = FONT_LG, font = Enum.Font.GothamBold, color = C.text,
-    sz = UDim2.new(1,-110,0,HDR_H*0.5),
-    pos = UDim2.new(0,14,0,6), z=2, parent = TitleBar,
+	text = "💧 Auto Watering Can",
+	size = FONT_LG, font = Enum.Font.GothamBold, color = C.text,
+	sz = UDim2.new(1,-110,0,HDR_H*0.5),
+	pos = UDim2.new(0,14,0,6), z=2, parent = TitleBar,
 })
 mkLabel({
-    text = "Super Watering Can only",
-    size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-    sz = UDim2.new(1,-110,0,HDR_H*0.38),
-    pos = UDim2.new(0,14,0,HDR_H*0.52), z=2, parent = TitleBar,
+	text = "Super Watering Can only",
+	size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
+	sz = UDim2.new(1,-110,0,HDR_H*0.38),
+	pos = UDim2.new(0,14,0,HDR_H*0.52), z=2, parent = TitleBar,
 })
 
 local titleLine = Instance.new("Frame")
@@ -450,38 +483,39 @@ titleLine.Parent = TitleBar
 
 -- Top-right buttons
 local function mkTopBtn(label, xOffset, bgColor, callback)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0,BTN_H,0,BTN_H)
-    btn.Position = UDim2.new(1,xOffset,0.5,-BTN_H/2)
-    btn.BackgroundColor3 = bgColor
-    btn.Text = label
-    btn.TextColor3 = C.text
-    btn.Font = Enum.Font.GothamBold
-    btn.TextSize = FONT_MD
-    btn.BorderSizePixel = 0
-    btn.ZIndex = 3
-    btn.Parent = TitleBar
-    mkCorner(btn, 6)
-    btn.MouseButton1Click:Connect(callback)
-    btn.TouchTap:Connect(callback)
-    return btn
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(0,BTN_H,0,BTN_H)
+	btn.Position = UDim2.new(1,xOffset,0.5,-BTN_H/2)
+	btn.BackgroundColor3 = bgColor
+	btn.Text = label
+	btn.TextColor3 = C.text
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = FONT_MD
+	btn.BorderSizePixel = 0
+	btn.ZIndex = 3
+	btn.Parent = TitleBar
+	mkCorner(btn, 6)
+	btn.MouseButton1Click:Connect(callback)
+	btn.TouchTap:Connect(callback)
+	return btn
 end
 
 local minimized = false
 mkTopBtn("-", -(BTN_H*2+16), C.topBtn, function()
-    minimized = not minimized
-    local body = Win:FindFirstChild("Body")
-    if body then body.Visible = not minimized end
-    local sb = Win:FindFirstChild("StatusBar")
-    if sb then sb.Visible = not minimized end
-    if isMobile then
-        Win.Size = minimized and UDim2.new(BASE_W,0,0,HDR_H) or UDim2.new(BASE_W,0,BASE_H,0)
-    else
-        Win.Size = minimized and UDim2.new(0,BASE_W,0,HDR_H) or UDim2.new(0,BASE_W,0,BASE_H)
-    end
+	minimized = not minimized
+	local body = Win:FindFirstChild("Body")
+	if body then body.Visible = not minimized end
+	local sb = Win:FindFirstChild("StatusBar")
+	if sb then sb.Visible = not minimized end
+	if isMobile then
+		Win.Size = minimized and UDim2.new(BASE_W,0,0,HDR_H) or UDim2.new(BASE_W,0,BASE_H,0)
+	else
+		Win.Size = minimized and UDim2.new(0,BASE_W,0,HDR_H) or UDim2.new(0,BASE_W,0,BASE_H)
+	end
 end)
+
 mkTopBtn("X", -(BTN_H+8), Color3.fromRGB(180,50,50), function()
-    ScreenGui:Destroy()
+	ScreenGui:Destroy()
 end)
 
 -- ── Body
@@ -496,6 +530,7 @@ Body.ScrollBarImageColor3 = C.accent
 Body.CanvasSize = UDim2.new(0,0,0,0)
 Body.AutomaticCanvasSize = Enum.AutomaticSize.Y
 Body.Parent = Win
+
 local BodyLayout = Instance.new("UIListLayout")
 BodyLayout.Padding = UDim.new(0,6)
 BodyLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -511,101 +546,107 @@ StatusBar.BackgroundColor3 = C.bg
 StatusBar.BorderSizePixel = 0
 StatusBar.ZIndex = 2
 StatusBar.Parent = Win
+
 local StatusLabel = mkLabel({
-    text = "Loading...",
-    size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-    sz = UDim2.new(1,-10,1,0),
-    pos = UDim2.new(0,10,0,0), z=2, parent = StatusBar,
+	text = "Loading...",
+	size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
+	sz = UDim2.new(1,-10,1,0),
+	pos = UDim2.new(0,10,0,0), z=2, parent = StatusBar,
 })
 
 -- ════════════════════════════════════════════════════════════
 -- SECTION BUILDER
 -- ════════════════════════════════════════════════════════════
 local function mkSection(order, title, defaultOpen)
-    local wrapper = Instance.new("Frame")
-    wrapper.LayoutOrder = order
-    wrapper.Size = UDim2.new(1,0,0,0)
-    wrapper.AutomaticSize = Enum.AutomaticSize.Y
-    wrapper.BackgroundTransparency = 1
-    wrapper.BorderSizePixel = 0
-    wrapper.Parent = Body
-    local wLayout = Instance.new("UIListLayout")
-    wLayout.Padding = UDim.new(0,4)
-    wLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    wLayout.Parent = wrapper
+	local wrapper = Instance.new("Frame")
+	wrapper.LayoutOrder = order
+	wrapper.Size = UDim2.new(1,0,0,0)
+	wrapper.AutomaticSize = Enum.AutomaticSize.Y
+	wrapper.BackgroundTransparency = 1
+	wrapper.BorderSizePixel = 0
+	wrapper.Parent = Body
 
-    local hdr = Instance.new("TextButton")
-    hdr.LayoutOrder = 0
-    hdr.Size = UDim2.new(1,0,0,ROW_H-4)
-    hdr.BackgroundColor3 = C.section
-    hdr.BorderSizePixel = 0
-    hdr.AutoButtonColor = false
-    hdr.Text = ""
-    hdr.Parent = wrapper
-    mkCorner(hdr, 6)
-    mkLabel({
-        text = title, size = FONT_MD, font = Enum.Font.GothamBold, color = C.text,
-        sz = UDim2.new(1,-40,1,0), pos = UDim2.new(0,10,0,0), z=1, parent = hdr,
-    })
-    local arrow = mkLabel({
-        text = defaultOpen ~= false and "▾" or "▸",
-        size = FONT_MD+2, font = Enum.Font.GothamBold, color = C.sub,
-        sz = UDim2.new(0,28,1,0), pos = UDim2.new(1,-32,0,0),
-        xalign = Enum.TextXAlignment.Center, z=1, parent = hdr,
-    })
+	local wLayout = Instance.new("UIListLayout")
+	wLayout.Padding = UDim.new(0,4)
+	wLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	wLayout.Parent = wrapper
 
-    local content = Instance.new("Frame")
-    content.LayoutOrder = 1
-    content.Size = UDim2.new(1,0,0,0)
-    content.AutomaticSize = Enum.AutomaticSize.Y
-    content.BackgroundColor3 = C.bg
-    content.BorderSizePixel = 0
-    content.Visible = defaultOpen ~= false
-    content.Parent = wrapper
-    mkCorner(content, 6)
-    local cLayout = Instance.new("UIListLayout")
-    cLayout.Padding = UDim.new(0,4)
-    cLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    cLayout.Parent = content
-    mkPad(content, 6,6,6,6)
+	local hdr = Instance.new("TextButton")
+	hdr.LayoutOrder = 0
+	hdr.Size = UDim2.new(1,0,0,ROW_H-4)
+	hdr.BackgroundColor3 = C.section
+	hdr.BorderSizePixel = 0
+	hdr.AutoButtonColor = false
+	hdr.Text = ""
+	hdr.Parent = wrapper
+	mkCorner(hdr, 6)
 
-    local open = defaultOpen ~= false
-    local function toggle()
-        open = not open
-        content.Visible = open
-        arrow.Text = open and "▾" or "▸"
-    end
-    hdr.MouseButton1Click:Connect(toggle)
-    hdr.TouchTap:Connect(toggle)
-    hdr.MouseEnter:Connect(function() hdr.BackgroundColor3 = C.itemHov end)
-    hdr.MouseLeave:Connect(function() hdr.BackgroundColor3 = C.section end)
-    return content
+	mkLabel({
+		text = title, size = FONT_MD, font = Enum.Font.GothamBold, color = C.text,
+		sz = UDim2.new(1,-40,1,0), pos = UDim2.new(0,10,0,0), z=1, parent = hdr,
+	})
+
+	local arrow = mkLabel({
+		text = defaultOpen ~= false and "▾" or "▸",
+		size = FONT_MD+2, font = Enum.Font.GothamBold, color = C.sub,
+		sz = UDim2.new(0,28,1,0), pos = UDim2.new(1,-32,0,0),
+		xalign = Enum.TextXAlignment.Center, z=1, parent = hdr,
+	})
+
+	local content = Instance.new("Frame")
+	content.LayoutOrder = 1
+	content.Size = UDim2.new(1,0,0,0)
+	content.AutomaticSize = Enum.AutomaticSize.Y
+	content.BackgroundColor3 = C.bg
+	content.BorderSizePixel = 0
+	content.Visible = defaultOpen ~= false
+	content.Parent = wrapper
+	mkCorner(content, 6)
+
+	local cLayout = Instance.new("UIListLayout")
+	cLayout.Padding = UDim.new(0,4)
+	cLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	cLayout.Parent = content
+	mkPad(content, 6,6,6,6)
+
+	local open = defaultOpen ~= false
+	local function toggle()
+		open = not open
+		content.Visible = open
+		arrow.Text = open and "▾" or "▸"
+	end
+	hdr.MouseButton1Click:Connect(toggle)
+	hdr.TouchTap:Connect(toggle)
+	hdr.MouseEnter:Connect(function() hdr.BackgroundColor3 = C.itemHov end)
+	hdr.MouseLeave:Connect(function() hdr.BackgroundColor3 = C.section end)
+
+	return content
 end
 
 -- ════════════════════════════════════════════════════════════
 -- ROW BUTTON
 -- ════════════════════════════════════════════════════════════
 local function mkRowBtn(parent, order, callback)
-    local btn = Instance.new("TextButton")
-    btn.LayoutOrder = order
-    btn.Size = UDim2.new(1,0,0,ROW_H)
-    btn.BackgroundColor3 = C.item
-    btn.BorderSizePixel = 0
-    btn.AutoButtonColor = false
-    btn.Text = ""
-    btn.Parent = parent
-    mkCorner(btn, 6)
-    btn.MouseButton1Click:Connect(callback)
-    btn.TouchTap:Connect(callback)
-    btn.MouseEnter:Connect(function()
-        if btn.BackgroundColor3 ~= C.itemSel and btn.BackgroundColor3 ~= C.seedSel then
-            btn.BackgroundColor3 = C.itemHov
-        end
-    end)
-    btn.MouseLeave:Connect(function()
-        if btn.BackgroundColor3 == C.itemHov then btn.BackgroundColor3 = C.item end
-    end)
-    return btn
+	local btn = Instance.new("TextButton")
+	btn.LayoutOrder = order
+	btn.Size = UDim2.new(1,0,0,ROW_H)
+	btn.BackgroundColor3 = C.item
+	btn.BorderSizePixel = 0
+	btn.AutoButtonColor = false
+	btn.Text = ""
+	btn.Parent = parent
+	mkCorner(btn, 6)
+	btn.MouseButton1Click:Connect(callback)
+	btn.TouchTap:Connect(callback)
+	btn.MouseEnter:Connect(function()
+		if btn.BackgroundColor3 ~= C.itemSel and btn.BackgroundColor3 ~= C.seedSel then
+			btn.BackgroundColor3 = C.itemHov
+		end
+	end)
+	btn.MouseLeave:Connect(function()
+		if btn.BackgroundColor3 == C.itemHov then btn.BackgroundColor3 = C.item end
+	end)
+	return btn
 end
 
 -- ════════════════════════════════════════════════════════════
@@ -618,12 +659,14 @@ toggleRow.BackgroundColor3 = C.section
 toggleRow.BorderSizePixel = 0
 toggleRow.Parent = Body
 mkCorner(toggleRow, 6)
+
 mkLabel({
-    text = "Auto Watering",
-    size = FONT_LG, font = Enum.Font.GothamBold, color = C.text,
-    sz = UDim2.new(0.6,0,1,0), pos = UDim2.new(0,12,0,0),
-    parent = toggleRow,
+	text = "Auto Watering",
+	size = FONT_LG, font = Enum.Font.GothamBold, color = C.text,
+	sz = UDim2.new(0.6,0,1,0), pos = UDim2.new(0,12,0,0),
+	parent = toggleRow,
 })
+
 local ToggleBtn = Instance.new("TextButton")
 ToggleBtn.Size = UDim2.new(0,70,0,BTN_H)
 ToggleBtn.Position = UDim2.new(1,-(70+10),0.5,-BTN_H/2)
@@ -651,10 +694,12 @@ delayRow.LayoutOrder = 1
 delayRow.Size = UDim2.new(1,0,0,ROW_H)
 delayRow.BackgroundTransparency = 1
 delayRow.Parent = SettContent
+
 mkLabel({
-    text = "Water Delay (s)", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-    sz = UDim2.new(0.55,0,1,0), pos = UDim2.new(0,2,0,0), parent = delayRow,
+	text = "Water Delay (s)", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
+	sz = UDim2.new(0.55,0,1,0), pos = UDim2.new(0,2,0,0), parent = delayRow,
 })
+
 local delayBox = Instance.new("TextBox")
 delayBox.Size = UDim2.new(0.42,0,0,BTN_H)
 delayBox.Position = UDim2.new(0.57,0,0.5,-BTN_H/2)
@@ -674,10 +719,12 @@ tpRow.LayoutOrder = 2
 tpRow.Size = UDim2.new(1,0,0,ROW_H)
 tpRow.BackgroundTransparency = 1
 tpRow.Parent = SettContent
+
 mkLabel({
-    text = "Auto TP to Plant", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-    sz = UDim2.new(0.6,0,1,0), pos = UDim2.new(0,2,0,0), parent = tpRow,
+	text = "Auto TP to Plant", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
+	sz = UDim2.new(0.6,0,1,0), pos = UDim2.new(0,2,0,0), parent = tpRow,
 })
+
 local tpBtn = Instance.new("TextButton")
 tpBtn.Size = UDim2.new(0,60,0,BTN_H)
 tpBtn.Position = UDim2.new(1,-(60+2),0.5,-BTN_H/2)
@@ -689,10 +736,11 @@ tpBtn.TextSize = FONT_MD
 tpBtn.BorderSizePixel = 0
 tpBtn.Parent = tpRow
 mkCorner(tpBtn, 6)
+
 local function toggleTP()
-    CONFIG.autoTP = not CONFIG.autoTP
-    tpBtn.Text = CONFIG.autoTP and "ON" or "OFF"
-    tpBtn.BackgroundColor3 = CONFIG.autoTP and C.green or C.red
+	CONFIG.autoTP = not CONFIG.autoTP
+	tpBtn.Text = CONFIG.autoTP and "ON" or "OFF"
+	tpBtn.BackgroundColor3 = CONFIG.autoTP and C.green or C.red
 end
 tpBtn.MouseButton1Click:Connect(toggleTP)
 tpBtn.TouchTap:Connect(toggleTP)
@@ -719,327 +767,314 @@ local plotButtons = {}
 local seedButtons = {}
 
 local function getPlotOwnerDisplay(plot)
-    local uid = plot:GetAttribute("OwnerUserId")
-    if typeof(uid) == "number" then
-        local p = Players:GetPlayerByUserId(uid)
-        if p then return p.DisplayName end
-    end
-    local name = plot:GetAttribute("Owner")
-    if typeof(name) == "string" and name ~= "" then return name end
-    return nil
+	local uid = plot:GetAttribute("OwnerUserId")
+	if typeof(uid) == "number" then
+		local p = Players:GetPlayerByUserId(uid)
+		if p then return p.DisplayName end
+	end
+	local name = plot:GetAttribute("Owner")
+	if typeof(name) == "string" and name ~= "" then return name end
+	return nil
 end
 
 local function updatePlotHighlights()
-    for name, btn in pairs(plotButtons) do
-        btn.BackgroundColor3 = (STATE.selectedPlotObj and STATE.selectedPlotObj.Name == name)
-            and C.itemSel or C.item
-    end
+	for name, btn in pairs(plotButtons) do
+		btn.BackgroundColor3 = (STATE.selectedPlotObj and STATE.selectedPlotObj.Name == name)
+			and C.itemSel or C.item
+	end
 end
 
 local function updateSeedHighlights()
-    for key, btn in pairs(seedButtons) do
-        local isSel = (key == "" and STATE.selectedSeedName == nil)
-                   or (key ~= "" and STATE.selectedSeedName == key)
-        btn.BackgroundColor3 = isSel and C.seedSel or C.item
-    end
+	for key, btn in pairs(seedButtons) do
+		local isSel = (key == "" and STATE.selectedSeedName == nil)
+			or (key ~= "" and STATE.selectedSeedName == key)
+		btn.BackgroundColor3 = isSel and C.seedSel or C.item
+	end
 end
 
 local rebuildSeedButtons
-
 rebuildSeedButtons = function()
-    for _, child in SeedContent:GetChildren() do
-        if child:IsA("TextButton") or (child:IsA("TextLabel") and child.LayoutOrder > 0) then
-            child:Destroy()
-        end
-    end
-    table.clear(seedButtons)
+	for _, child in SeedContent:GetChildren() do
+		if child:IsA("TextButton") or (child:IsA("TextLabel") and child.LayoutOrder > 0) then
+			child:Destroy()
+		end
+	end
+	table.clear(seedButtons)
 
-    local allBtn = mkRowBtn(SeedContent, 1, function()
-        STATE.selectedSeedName = nil
-        STATE.wateredPlants = {}; STATE.plantsWatered = 0
-        updateSeedHighlights()
-        STATE.statusMessage = "🌿 Targeting all plant types"
-    end)
-    allBtn.BackgroundColor3 = STATE.selectedSeedName == nil and C.seedSel or C.item
-    mkLabel({
-        text = "🌿  All Plants",
-        size = FONT_MD, font = Enum.Font.GothamBold, color = C.green,
-        sz = UDim2.new(1,0,1,0), pos = UDim2.new(0,10,0,0),
-        parent = allBtn,
-    })
-    seedButtons[""] = allBtn
+	local allBtn = mkRowBtn(SeedContent, 1, function()
+		STATE.selectedSeedName = nil
+		STATE.wateredPlants = {}; STATE.plantsWatered = 0
+		updateSeedHighlights()
+		STATE.statusMessage = "🌿 Targeting all plant types"
+	end)
+	allBtn.BackgroundColor3 = STATE.selectedSeedName == nil and C.seedSel or C.item
+	mkLabel({
+		text = "🌿  All Plants",
+		size = FONT_MD, font = Enum.Font.GothamBold, color = C.green,
+		sz = UDim2.new(1,0,1,0), pos = UDim2.new(0,10,0,0),
+		parent = allBtn,
+	})
+	seedButtons[""] = allBtn
 
-    local plot = getTargetPlot()
-    local names = getSeedNamesInPlot(plot)
+	local plot = getTargetPlot()
+	local names = getSeedNamesInPlot(plot)
 
-    if #names == 0 then
-        local empty = mkLabel({
-            text = "  No plants in this plot",
-            size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-            sz = UDim2.new(1,0,0,28), parent = SeedContent,
-        })
-        empty.LayoutOrder = 2
-        return
-    end
+	if #names == 0 then
+		local empty = mkLabel({
+			text = "  No plants in this plot",
+			size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
+			sz = UDim2.new(1,0,0,28), parent = SeedContent,
+		})
+		empty.LayoutOrder = 2
+		return
+	end
 
-    for i, seedName in ipairs(names) do
-        local cnt = 0
-        local pf = plot and plot:FindFirstChild("Plants")
-        if pf then
-            for _, pl in pf:GetChildren() do
-                if pl:GetAttribute("SeedName") == seedName then cnt += 1 end
-            end
-        end
-
-        local btn = mkRowBtn(SeedContent, i + 1, function()
-            STATE.selectedSeedName = seedName
-            STATE.wateredPlants = {}; STATE.plantsWatered = 0
-            updateSeedHighlights()
-            STATE.statusMessage = "🎯 Targeting: " .. seedName
-        end)
-        btn.BackgroundColor3 = STATE.selectedSeedName == seedName and C.seedSel or C.item
-
-        mkLabel({
-            text = "🌸  " .. seedName,
-            size = FONT_MD, font = Enum.Font.Gotham, color = C.text,
-            sz = UDim2.new(0.72,0,1,0), pos = UDim2.new(0,10,0,0),
-            parent = btn,
-        })
-        mkLabel({
-            text = "×" .. cnt,
-            size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-            sz = UDim2.new(0.25,0,1,0), pos = UDim2.new(0.75,0,0,0),
-            xalign = Enum.TextXAlignment.Right,
-            parent = btn,
-        })
-        seedButtons[seedName] = btn
-    end
+	for i, seedName in ipairs(names) do
+		local cnt = 0
+		local pf = plot and plot:FindFirstChild("Plants")
+		if pf then
+			for _, pl in pf:GetChildren() do
+				if pl:GetAttribute("SeedName") == seedName then cnt += 1 end
+			end
+		end
+		local btn = mkRowBtn(SeedContent, i + 1, function()
+			STATE.selectedSeedName = seedName
+			STATE.wateredPlants = {}; STATE.plantsWatered = 0
+			updateSeedHighlights()
+			STATE.statusMessage = "🎯 Targeting: " .. seedName
+		end)
+		btn.BackgroundColor3 = STATE.selectedSeedName == seedName and C.seedSel or C.item
+		mkLabel({
+			text = "🌸  " .. seedName,
+			size = FONT_MD, font = Enum.Font.Gotham, color = C.text,
+			sz = UDim2.new(0.72,0,1,0), pos = UDim2.new(0,10,0,0),
+			parent = btn,
+		})
+		mkLabel({
+			text = "×" .. cnt,
+			size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
+			sz = UDim2.new(0.25,0,1,0), pos = UDim2.new(0.75,0,0,0),
+			xalign = Enum.TextXAlignment.Right,
+			parent = btn,
+		})
+		seedButtons[seedName] = btn
+	end
 end
 
 local function buildPlotButton(plot, order)
-    local btn = mkRowBtn(PlotContent, order, function()
-        STATE.selectedPlotObj = plot
-        STATE.selectedSeedName = nil
-        STATE.wateredPlants = {}; STATE.plantsWatered = 0
-        updatePlotHighlights()
-        rebuildSeedButtons()
-        STATE.statusMessage = "🎯 Targeting " .. plot.Name
-    end)
+	local btn = mkRowBtn(PlotContent, order, function()
+		STATE.selectedPlotObj = plot
+		STATE.selectedSeedName = nil
+		STATE.wateredPlants = {}; STATE.plantsWatered = 0
+		updatePlotHighlights()
+		rebuildSeedButtons()
+		STATE.statusMessage = "🎯 Targeting " .. plot.Name
+	end)
 
-    local nameLabel = mkLabel({
-        text = "", size = FONT_MD, font = Enum.Font.GothamBold, color = C.text,
-        sz = UDim2.new(0.62,0,0.55,0), pos = UDim2.new(0,10,0,4),
-        parent = btn,
-    })
-    local ownerLabel = mkLabel({
-        text = "", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-        sz = UDim2.new(0.62,0,0.4,0), pos = UDim2.new(0,10,0.58,0),
-        parent = btn,
-    })
-    local cntLabel = mkLabel({
-        text = "—", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
-        sz = UDim2.new(0.34,0,1,0), pos = UDim2.new(0.66,0,0,0),
-        xalign = Enum.TextXAlignment.Right,
-        parent = btn,
-    })
-    mkPad(cntLabel, 0, 8)
+	local nameLabel = mkLabel({
+		text = "", size = FONT_MD, font = Enum.Font.GothamBold, color = C.text,
+		sz = UDim2.new(0.62,0,0.55,0), pos = UDim2.new(0,10,0,4),
+		parent = btn,
+	})
+	local ownerLabel = mkLabel({
+		text = "", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
+		sz = UDim2.new(0.62,0,0.4,0), pos = UDim2.new(0,10,0.58,0),
+		parent = btn,
+	})
+	local cntLabel = mkLabel({
+		text = "—", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
+		sz = UDim2.new(0.34,0,1,0), pos = UDim2.new(0.66,0,0,0),
+		xalign = Enum.TextXAlignment.Right,
+		parent = btn,
+	})
+	mkPad(cntLabel, 0, 8)
 
-    local function refresh()
-        local myId = LocalPlayer:GetAttribute("PlotId")
-        local isMine = myId and plot.Name == ("Plot" .. tostring(myId))
-        local owner = getPlotOwnerDisplay(plot)
-        local pf = plot:FindFirstChild("Plants")
-        local cnt = 0
-        if pf then
-            for _, p in pf:GetChildren() do
-                if p:GetAttribute("SeedName") then cnt += 1 end
-            end
-        end
-        if isMine then
-            nameLabel.Text = "🏠 " .. plot.Name
-            nameLabel.TextColor3 = C.green
-            ownerLabel.Text = "Your plot"
-        elseif owner then
-            nameLabel.Text = "👤 " .. plot.Name
-            nameLabel.TextColor3 = C.text
-            ownerLabel.Text = owner
-        else
-            nameLabel.Text = "🌿 " .. plot.Name
-            nameLabel.TextColor3 = C.sub
-            ownerLabel.Text = "Empty"
-        end
-        cntLabel.Text = cnt > 0 and ("🌱 " .. cnt) or "—"
-    end
+	local function refresh()
+		local myId = LocalPlayer:GetAttribute("PlotId")
+		local isMine = myId and plot.Name == ("Plot" .. tostring(myId))
+		local owner = getPlotOwnerDisplay(plot)
+		local pf = plot:FindFirstChild("Plants")
+		local cnt = 0
+		if pf then
+			for _, p in pf:GetChildren() do
+				if p:GetAttribute("SeedName") then cnt += 1 end
+			end
+		end
+		if isMine then
+			nameLabel.Text = "🏠 " .. plot.Name
+			nameLabel.TextColor3 = C.green
+			ownerLabel.Text = "Your plot"
+		elseif owner then
+			nameLabel.Text = "👤 " .. plot.Name
+			nameLabel.TextColor3 = C.text
+			ownerLabel.Text = owner
+		else
+			nameLabel.Text = "🌿 " .. plot.Name
+			nameLabel.TextColor3 = C.sub
+			ownerLabel.Text = "Empty"
+		end
+		cntLabel.Text = cnt > 0 and ("🌱 " .. cnt) or "—"
+	end
 
-    refresh()
-    plot:GetAttributeChangedSignal("Owner"):Connect(refresh)
-    plot:GetAttributeChangedSignal("OwnerUserId"):Connect(refresh)
-    local pf = plot:FindFirstChild("Plants")
-    if pf then
-        pf.ChildAdded:Connect(refresh)
-        pf.ChildRemoved:Connect(refresh)
-    end
-    plotButtons[plot.Name] = btn
+	refresh()
+	plot:GetAttributeChangedSignal("Owner"):Connect(refresh)
+	plot:GetAttributeChangedSignal("OwnerUserId"):Connect(refresh)
+	local pf = plot:FindFirstChild("Plants")
+	if pf then
+		pf.ChildAdded:Connect(refresh)
+		pf.ChildRemoved:Connect(refresh)
+	end
+	plotButtons[plot.Name] = btn
 end
 
 local function populatePlots()
-    for _, c in PlotContent:GetChildren() do
-        if c:IsA("TextButton") then c:Destroy() end
-    end
-    table.clear(plotButtons)
+	for _, c in PlotContent:GetChildren() do
+		if c:IsA("TextButton") then c:Destroy() end
+	end
+	table.clear(plotButtons)
 
-    local plots = Gardens:GetChildren()
-    table.sort(plots, function(a, b)
-        return (tonumber(a.Name:match("%d+")) or 0) < (tonumber(b.Name:match("%d+")) or 0)
-    end)
-    for i, plot in ipairs(plots) do
-        buildPlotButton(plot, i)
-    end
+	local plots = Gardens:GetChildren()
+	table.sort(plots, function(a, b)
+		return (tonumber(a.Name:match("%d+")) or 0) < (tonumber(b.Name:match("%d+")) or 0)
+	end)
+	for i, plot in ipairs(plots) do
+		buildPlotButton(plot, i)
+	end
 
-    if not (STATE.selectedPlotObj and STATE.selectedPlotObj.Parent) then
-        local myId = LocalPlayer:GetAttribute("PlotId")
-        if myId then
-            local mine = Gardens:FindFirstChild("Plot" .. tostring(myId))
-            if mine then STATE.selectedPlotObj = mine end
-        end
-    end
-    updatePlotHighlights()
-    rebuildSeedButtons()
+	if not (STATE.selectedPlotObj and STATE.selectedPlotObj.Parent) then
+		local myId = LocalPlayer:GetAttribute("PlotId")
+		if myId then
+			local mine = Gardens:FindFirstChild("Plot" .. tostring(myId))
+			if mine then STATE.selectedPlotObj = mine end
+		end
+	end
+	updatePlotHighlights()
+	rebuildSeedButtons()
 end
 
 -- ════════════════════════════════════════════════════════════
 -- DELAYED INIT
 -- ════════════════════════════════════════════════════════════
 task.spawn(function()
-    -- Wait for character
-    if not LocalPlayer.Character then
-        LocalPlayer.CharacterAdded:Wait()
-    end
-
-    -- Wait for PlotId (up to 60s)
-    local attempts = 0
-    while LocalPlayer:GetAttribute("PlotId") == nil and attempts < 120 do
-        task.wait(0.5)
-        attempts += 1
-    end
-
-    -- Wait for Gardens children (up to 60s)
-    attempts = 0
-    while #Gardens:GetChildren() == 0 and attempts < 120 do
-        task.wait(0.5)
-        attempts += 1
-    end
-
-    -- Extra wait to make sure attributes are replicated
-    task.wait(1)
-
-    populatePlots()
-
-    Gardens.ChildAdded:Connect(function(c)
-        if c:IsA("Model") or c:IsA("Folder") then populatePlots() end
-    end)
-    Gardens.ChildRemoved:Connect(function() populatePlots() end)
-    LocalPlayer:GetAttributeChangedSignal("PlotId"):Connect(populatePlots)
-
-    STATE.statusMessage = "✅ Ready — select a plot"
+	if not LocalPlayer.Character then
+		LocalPlayer.CharacterAdded:Wait()
+	end
+	local attempts = 0
+	while LocalPlayer:GetAttribute("PlotId") == nil and attempts < 120 do
+		task.wait(0.5)
+		attempts += 1
+	end
+	attempts = 0
+	while #Gardens:GetChildren() == 0 and attempts < 120 do
+		task.wait(0.5)
+		attempts += 1
+	end
+	task.wait(1)
+	populatePlots()
+	Gardens.ChildAdded:Connect(function(c)
+		if c:IsA("Model") or c:IsA("Folder") then populatePlots() end
+	end)
+	Gardens.ChildRemoved:Connect(function() populatePlots() end)
+	LocalPlayer:GetAttributeChangedSignal("PlotId"):Connect(populatePlots)
+	STATE.statusMessage = "✅ Ready — select a plot"
 end)
 
 -- ════════════════════════════════════════════════════════════
 -- UI CALLBACKS
 -- ════════════════════════════════════════════════════════════
 local function toggleEnabled()
-    CONFIG.enabled = not CONFIG.enabled
-    if CONFIG.enabled then
-        ToggleBtn.BackgroundColor3 = C.green
-        ToggleBtn.Text = "ON"
-        STATE.wateredPlants = {}
-        STATE.plantsWatered = 0
-        STATE.statusMessage = "🟢 Enabled"
-    else
-        ToggleBtn.BackgroundColor3 = C.red
-        ToggleBtn.Text = "OFF"
-        STATE.statusMessage = "🔴 Disabled"
-    end
+	CONFIG.enabled = not CONFIG.enabled
+	if CONFIG.enabled then
+		ToggleBtn.BackgroundColor3 = C.green
+		ToggleBtn.Text = "ON"
+		STATE.wateredPlants = {}
+		STATE.plantsWatered = 0
+		STATE.statusMessage = "🟢 Enabled"
+	else
+		ToggleBtn.BackgroundColor3 = C.red
+		ToggleBtn.Text = "OFF"
+		STATE.statusMessage = "🔴 Disabled"
+	end
 end
+
 ToggleBtn.MouseButton1Click:Connect(toggleEnabled)
 ToggleBtn.TouchTap:Connect(toggleEnabled)
 
 delayBox.FocusLost:Connect(function()
-    local v = tonumber(delayBox.Text)
-    if v and v > 0 then
-        CONFIG.waterDelay = v
-    else
-        delayBox.Text = tostring(CONFIG.waterDelay)
-    end
+	local v = tonumber(delayBox.Text)
+	if v and v > 0 then
+		CONFIG.waterDelay = v
+	else
+		delayBox.Text = tostring(CONFIG.waterDelay)
+	end
 end)
 
 RunService.RenderStepped:Connect(function()
-    local plotName   = STATE.selectedPlotObj and STATE.selectedPlotObj.Name or "None"
-    local seedFilter = STATE.selectedSeedName or "All"
-    local can        = getWateringCan()
-    local canStatus  = can and "🪣 Super Watering Can ✓" or "❌ No Super Watering Can"
-    local tpStatus   = CONFIG.autoTP and "✅ ON" or "❌ OFF"
-
-    statsLabel.Text = string.format(
-        "Plot:      %s\nFilter:    %s\nFound:    %d plants\nWatered: %d\nDelay:     %.2fs\nAuto TP:  %s\n%s",
-        plotName, seedFilter,
-        STATE.plantsFound, STATE.plantsWatered,
-        CONFIG.waterDelay, tpStatus, canStatus
-    )
-
-    StatusLabel.Text = STATE.statusMessage
-    StatusLabel.TextColor3 = CONFIG.enabled and C.green or C.sub
+	local plotName   = STATE.selectedPlotObj and STATE.selectedPlotObj.Name or "None"
+	local seedFilter = STATE.selectedSeedName or "All"
+	local can        = getWateringCan()
+	local canStatus  = can and "🪣 Super Watering Can ✓" or "❌ No Super Watering Can"
+	local tpStatus   = CONFIG.autoTP and "✅ ON" or "❌ OFF"
+	statsLabel.Text = string.format(
+		"Plot:      %s\nFilter:    %s\nFound:    %d plants\nWatered: %d\nDelay:     %.2fs\nAuto TP:  %s\n%s",
+		plotName, seedFilter,
+		STATE.plantsFound, STATE.plantsWatered,
+		CONFIG.waterDelay, tpStatus, canStatus
+	)
+	StatusLabel.Text = STATE.statusMessage
+	StatusLabel.TextColor3 = CONFIG.enabled and C.green or C.sub
 end)
 
 -- ── Draggable
 do
-    local dragging, dragStart, startPos
-    local function onDragStart(pos)
-        dragging = true; dragStart = pos; startPos = Win.Position
-    end
-    local function onDragMove(pos)
-        if not dragging then return end
-        local delta = pos - dragStart
-        Win.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + delta.X,
-            startPos.Y.Scale, startPos.Y.Offset + delta.Y
-        )
-    end
-    local function onDragEnd() dragging = false end
+	local dragging, dragStart, startPos
+	local function onDragStart(pos)
+		dragging = true; dragStart = pos; startPos = Win.Position
+	end
+	local function onDragMove(pos)
+		if not dragging then return end
+		local delta = pos - dragStart
+		Win.Position = UDim2.new(
+			startPos.X.Scale, startPos.X.Offset + delta.X,
+			startPos.Y.Scale, startPos.Y.Offset + delta.Y
+		)
+	end
+	local function onDragEnd() dragging = false end
 
-    TitleBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            onDragStart(input.Position)
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement then
-            onDragMove(input.Position)
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            onDragEnd()
-        end
-    end)
-    TitleBar.TouchLongPress:Connect(function(touches)
-        if touches[1] then onDragStart(touches[1]) end
-    end)
-    TitleBar.TouchMoved:Connect(function(touches)
-        if touches[1] then onDragMove(touches[1].Position) end
-    end)
-    TitleBar.TouchEnded:Connect(onDragEnd)
+	TitleBar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			onDragStart(input.Position)
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseMovement then
+			onDragMove(input.Position)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			onDragEnd()
+		end
+	end)
+	TitleBar.TouchLongPress:Connect(function(touches)
+		if touches[1] then onDragStart(touches[1]) end
+	end)
+	TitleBar.TouchMoved:Connect(function(touches)
+		if touches[1] then onDragMove(touches[1].Position) end
+	end)
+	TitleBar.TouchEnded:Connect(onDragEnd)
 end
 
 if not isMobile then
-    UserInputService.InputBegan:Connect(function(input, processed)
-        if processed then return end
-        if input.KeyCode == Enum.KeyCode.RightShift then
-            Win.Visible = not Win.Visible
-        end
-    end)
+	UserInputService.InputBegan:Connect(function(input, processed)
+		if processed then return end
+		if input.KeyCode == Enum.KeyCode.RightShift then
+			toggleWindow()
+		end
+	end)
 end
 
 print("[💧 Auto Watering Can] Loaded!")
 if not isMobile then print("[⏱️] RightShift = toggle UI") end
 
+	
