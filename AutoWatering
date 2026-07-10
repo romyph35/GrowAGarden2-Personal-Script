@@ -188,6 +188,43 @@ local function getSeedNamesInPlot(plot)
 	return names
 end
 
+local function forceDeletePlants()
+	local plot = getTargetPlot()
+	if not plot then
+		STATE.statusMessage = "❌ No plot selected"
+		return
+	end
+	local folder = plot:FindFirstChild("Plants")
+	if not folder then
+		STATE.statusMessage = "❌ No Plants folder found"
+		return
+	end
+
+	local kept = false
+	for _, plant in ipairs(folder:GetChildren()) do
+		local seed = plant:GetAttribute("SeedName")
+		if STATE.selectedSeedName then
+			if seed == STATE.selectedSeedName then
+				if not kept then
+					kept = true
+				else
+					plant:Destroy()
+				end
+			end
+		else
+			if not kept then
+				kept = true
+			else
+				plant:Destroy()
+			end
+		end
+	end
+
+	STATE.wateredPlants = {}
+	STATE.plantsWatered = 0
+	STATE.statusMessage = "🗑️ Removed plants, kept 1"
+end
+
 -- ════════════════════════════════════════════════════════════
 -- AUTO TP
 -- ════════════════════════════════════════════════════════════
@@ -681,6 +718,7 @@ ToggleBtn.BorderSizePixel = 0
 ToggleBtn.Parent = toggleRow
 mkCorner(ToggleBtn, 6)
 
+
 -- ════════════════════════════════════════════════════════════
 -- SECTIONS
 -- ════════════════════════════════════════════════════════════
@@ -690,6 +728,40 @@ local SettContent  = mkSection(5, "⚙️  Settings", false)
 local StatsContent = mkSection(6, "📊  Stats", true)
 
 -- ── Settings rows
+-- Delete Plants row (in Settings)
+local deleteRow = Instance.new("Frame")
+deleteRow.LayoutOrder = 3
+deleteRow.Size = UDim2.new(1,0,0,ROW_H)
+deleteRow.BackgroundTransparency = 1
+deleteRow.Parent = SettContent
+
+mkLabel({
+	text = "Keep 1, Remove Rest", size = FONT_SM, font = Enum.Font.Gotham, color = C.sub,
+	sz = UDim2.new(0.55,0,1,0), pos = UDim2.new(0,2,0,0), parent = deleteRow,
+})
+
+local DeleteBtn = Instance.new("TextButton")
+DeleteBtn.Size = UDim2.new(0.42,0,0,BTN_H)
+DeleteBtn.Position = UDim2.new(0.57,0,0.5,-BTN_H/2)
+DeleteBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
+DeleteBtn.Text = "🗑️ Delete"
+DeleteBtn.TextColor3 = C.text
+DeleteBtn.Font = Enum.Font.GothamBold
+DeleteBtn.TextSize = FONT_MD
+DeleteBtn.BorderSizePixel = 0
+DeleteBtn.Parent = deleteRow
+mkCorner(DeleteBtn, 6)
+
+DeleteBtn.MouseButton1Click:Connect(forceDeletePlants)
+DeleteBtn.TouchTap:Connect(forceDeletePlants)
+
+DeleteBtn.MouseEnter:Connect(function()
+	DeleteBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+end)
+DeleteBtn.MouseLeave:Connect(function()
+	DeleteBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
+end)
+
 -- Delay
 local delayRow = Instance.new("Frame")
 delayRow.LayoutOrder = 1
