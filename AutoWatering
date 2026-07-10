@@ -447,12 +447,13 @@ Win.ClipsDescendants = true
 Win.Parent = Root
 
 if isMobile then
-	Win.Size = UDim2.new(BASE_W, 0, BASE_H, 0)
-	Win.Position = UDim2.new((1-BASE_W)/2, 0, 0.5, -BASE_H * 0.375)
+	Win.Size = UDim2.new(0.92, 0, 0, 520)
+	Win.Position = UDim2.new(0.04, 0, 0.5, -260)
 else
 	Win.Size = UDim2.new(0, BASE_W, 0, BASE_H)
 	Win.Position = UDim2.new(0.5, -BASE_W/2, 0.5, -BASE_H/2)
 end
+
 
 
 mkCorner(Win, 10)
@@ -1100,50 +1101,75 @@ RunService.RenderStepped:Connect(function()
 end)
 
 -- ── Draggable
+-- ── Draggable
 do
-	local dragging, dragStart, startPos
+	local dragging = false
+	local dragStartPos = Vector2.new(0, 0)
+	local winStartPos = UDim2.new(0, 0, 0, 0)
+
 	local function onDragStart(pos)
-		dragging = true; dragStart = pos; startPos = Win.Position
+		dragging = true
+		dragStartPos = Vector2.new(pos.X, pos.Y)
+		winStartPos = Win.Position
 	end
+
 	local function onDragMove(pos)
 		if not dragging then return end
-		local delta = pos - dragStart
+		local delta = Vector2.new(pos.X, pos.Y) - dragStartPos
+		local newX = winStartPos.X.Offset + delta.X
+		local newY = winStartPos.Y.Offset + delta.Y
+
+		-- clamp so window stays on screen
+		local screenSize = workspace.CurrentCamera.ViewportSize
+		local winSize = Win.AbsoluteSize
+		newX = math.clamp(newX, 0, screenSize.X - winSize.X)
+		newY = math.clamp(newY, 0, screenSize.Y - winSize.Y)
+
 		Win.Position = UDim2.new(
-			startPos.X.Scale, startPos.X.Offset + delta.X,
-			startPos.Y.Scale, startPos.Y.Offset + delta.Y
+			winStartPos.X.Scale, newX,
+			winStartPos.Y.Scale, newY
 		)
 	end
-	local function onDragEnd() dragging = false end
 
+	local function onDragEnd()
+		dragging = false
+	end
+
+	-- Mouse drag
 	TitleBar.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
 			onDragStart(input.Position)
 		end
 	end)
+
 	UserInputService.InputChanged:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseMovement then
 			onDragMove(input.Position)
 		end
 	end)
+
 	UserInputService.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
 			onDragEnd()
 		end
 	end)
-	TitleBar.TouchLongPress:Connect(function(touches)
-		if touches[1] then onDragStart(touches[1]) end
-	end)
-	TitleBar.TouchMoved:Connect(function(touches)
-		if touches[1] then onDragMove(touches[1].Position) end
-	end)
-	TitleBar.TouchEnded:Connect(onDragEnd)
-end
 
-if not isMobile then
-	UserInputService.InputBegan:Connect(function(input, processed)
-		if processed then return end
-		if input.KeyCode == Enum.KeyCode.RightShift then
-			toggleWindow()
+	-- Mobile touch drag (fixed)
+	TitleBar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			onDragStart(input.Position)
+		end
+	end)
+
+	TitleBar.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			onDragMove(input.Position)
+		end
+	end)
+
+	TitleBar.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			onDragEnd()
 		end
 	end)
 end
