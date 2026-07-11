@@ -1,9 +1,4 @@
----[[ Fruit Mail Sender  — responsive for PC, tablet & mobile
-     • 100 fruits max · auto-batched (20/call)
-     • Send tab + History tab
-     • Discord Webhook logging
-     • RightShift / on-screen button to toggle
---]]
+
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -470,10 +465,126 @@ recBox:GetPropertyChangedSignal("Text"):Connect(function()
         recInfo.Text="Press Set to confirm"; recInfo.TextColor3=C.muted end
 end)
 
--- Fruit Picker
+-- ════════════════════════════════════════════════════════════
+-- FRUIT PICKER  +  TYPE FILTER
+-- ════════════════════════════════════════════════════════════
+
+-- Declare these UP FRONT so all handlers below can reference them
+local filterType    = nil   -- nil = all types, string = specific fruit name
+local currentFruits = {}
+local selectedFruit = nil
+-- refreshFruits is forward-declared; defined after pickBtn exists
+local refreshFruits
+
+-- Type filter row
+local typeWrap = Instance.new("Frame"); typeWrap.BackgroundTransparency=1
+typeWrap.Size=UDim2.new(1,0,0,16+BTN_H); typeWrap.LayoutOrder=3; typeWrap.Parent=sendPanel
+mkLabel(typeWrap,{Text="Filter by Type  (optional)", Size=UDim2.new(1,0,0,16), TextSize=FS_SM})
+
+-- type dropdown button — full width
+local typeBtn = mkBtn(typeWrap,{Size=UDim2.new(1,0,0,BTN_H),
+    Position=UDim2.fromOffset(0,16), BackgroundColor3=C.field,
+    Text="All Types", Font=Enum.Font.Gotham,
+    TextXAlignment=Enum.TextXAlignment.Left, TextSize=FS_SM})
+mkPad(typeBtn,0,8,0,8); typeBtn.AutoButtonColor=false
+
+-- type dropdown (parented to gui so it floats above everything — no scroll reset on mobile)
+local typeScrim = Instance.new("TextButton"); typeScrim.BackgroundTransparency=1
+typeScrim.Text=""; typeScrim.Size=UDim2.fromScale(1,1); typeScrim.Visible=false
+typeScrim.ZIndex=80; typeScrim.AutoButtonColor=false; typeScrim.Parent=gui
+
+local typeDropF = Instance.new("Frame"); typeDropF.BackgroundColor3=C.panel
+typeDropF.BorderSizePixel=0; typeDropF.Visible=false; typeDropF.ZIndex=81
+typeDropF.ClipsDescendants=true; typeDropF.Parent=gui
+mkCorner(typeDropF,8); mkStroke(typeDropF)
+
+local typeDropS = Instance.new("ScrollingFrame"); typeDropS.BackgroundTransparency=1
+typeDropS.BorderSizePixel=0; typeDropS.Size=UDim2.fromScale(1,1)
+typeDropS.ScrollBarThickness=4; typeDropS.AutomaticCanvasSize=Enum.AutomaticSize.Y
+typeDropS.ZIndex=62; typeDropS.Parent=typeDropF
+mkPad(typeDropS,4,4,4,4)
+Instance.new("UIListLayout",typeDropS).Padding=UDim.new(0,4)
+
+local function closeTypeDropdown()
+    typeScrim.Visible=false; typeDropF.Visible=false
+    for _,c in typeDropS:GetChildren() do
+        if c:IsA("GuiObject") and not c:IsA("UIListLayout") then c:Destroy() end
+    end
+end
+typeScrim.MouseButton1Click:Connect(closeTypeDropdown)
+
+local function getUniqueTypes(fruits)
+    local seen, types = {}, {}
+    for _,f in fruits do
+        -- itemKey is the base fruit name (no mutation, no weight)
+        local k = f.itemKey
+        if k and not seen[k] then seen[k]=true; table.insert(types,k) end
+    end
+    table.sort(types)
+    return types
+end
+
+local function setFilterType(t)
+    filterType = t
+    typeBtn.Text = t and t or "All Types"
+    typeBtn.TextColor3 = t and C.accent or C.text
+    -- update addAll label (addAllBtn defined below, safe to reference at call time)
+    if addAllBtn then
+        addAllBtn.Text = t
+            and ('Add All "%s" (up to %d)'):format(t, MAX_CART)
+            or  "Add All Fruits (up to "..MAX_CART..")"
+    end
+    -- refresh picker to show filtered selection
+    if refreshFruits then refreshFruits() end
+end
+
+typeBtn.MouseButton1Click:Connect(function()
+    if refreshFruits then refreshFruits() end
+    closeTypeDropdown()
+    local types = getUniqueTypes(currentFruits)
+    if #types == 0 then setStatus("No fruits in inventory.",true); return end
+
+    local bp = typeBtn.AbsolutePosition  -- absolute screen position
+    local menuH = math.min((#types+1)*(BTN_H+4)+8, math.floor(SH*0.35))
+    local dropW = typeBtn.AbsoluteSize.X
+    -- clamp so it doesn't go off-screen bottom
+    local posY = bp.Y + typeBtn.AbsoluteSize.Y + 4
+    if posY + menuH > SH - 10 then posY = bp.Y - menuH - 4 end
+    typeDropF.Size = UDim2.fromOffset(dropW, menuH)
+    typeDropF.Position = UDim2.fromOffset(bp.X, posY)
+
+    -- "All Types" option first
+    local allRow = mkBtn(typeDropS,{Size=UDim2.new(1,0,0,BTN_H),
+        BackgroundColor3=filterType==nil and C.aDark or C.field,
+        Text="All Types", Font=Enum.Font.Gotham, TextSize=FS_SM,
+        TextXAlignment=Enum.TextXAlignment.Left, ZIndex=83})
+    mkPad(allRow,0,8,0,8)
+    local function pickAll() setFilterType(nil); closeTypeDropdown() end
+    allRow.MouseButton1Click:Connect(pickAll); allRow.TouchTap:Connect(pickAll)
+
+    -- one row per unique type
+    for _,typeName in types do
+        -- count how many of this type exist
+        local cnt = 0
+        for _,f in currentFruits do if f.itemKey==typeName then cnt+=1 end end
+        local row = mkBtn(typeDropS,{Size=UDim2.new(1,0,0,BTN_H),
+            BackgroundColor3=filterType==typeName and C.aDark or C.field,
+            Text=string.format("%s  (%d)", typeName, cnt),
+            Font=Enum.Font.Gotham, TextSize=FS_SM,
+            TextXAlignment=Enum.TextXAlignment.Left, ZIndex=83})
+        mkPad(row,0,8,0,8)
+        local tn = typeName
+        local function pick() setFilterType(tn); closeTypeDropdown() end
+        row.MouseButton1Click:Connect(pick); row.TouchTap:Connect(pick)
+    end
+    typeScrim.Visible=true; typeDropF.Visible=true
+end)
+typeBtn.TouchTap:Connect(function() typeBtn.MouseButton1Click:Fire() end)
+
+-- Individual fruit picker (select a specific fruit to add one-by-one)
 local pickWrap = Instance.new("Frame"); pickWrap.BackgroundTransparency=1
-pickWrap.Size=UDim2.new(1,0,0,16+BTN_H); pickWrap.LayoutOrder=3; pickWrap.Parent=sendPanel
-mkLabel(pickWrap, {Text="Select Fruit", Size=UDim2.new(1,0,0,16), TextSize=FS_SM})
+pickWrap.Size=UDim2.new(1,0,0,16+BTN_H); pickWrap.LayoutOrder=4; pickWrap.Parent=sendPanel
+mkLabel(pickWrap, {Text="Select Individual Fruit", Size=UDim2.new(1,0,0,16), TextSize=FS_SM})
 
 local ADD_W = math.floor(WIN_W*0.22)
 local pickBtn = mkBtn(pickWrap, {Size=UDim2.new(1,-(ADD_W+8),0,BTN_H),
@@ -485,62 +596,150 @@ local addOneBtn = mkBtn(pickWrap, {Size=UDim2.fromOffset(ADD_W,BTN_H),
     Position=UDim2.new(1,-ADD_W,0,16), BackgroundColor3=C.green, Text="+ Add", TextSize=FS_MD})
 addOneBtn.TouchTap:Connect(function() addOneBtn.MouseButton1Click:Fire() end)
 
--- dropdown (parented to root so it floats above panels)
-local scrim = Instance.new("TextButton"); scrim.BackgroundTransparency=1; scrim.Text=""
-scrim.Size=UDim2.fromScale(1,1); scrim.Visible=false; scrim.ZIndex=50
-scrim.AutoButtonColor=false; scrim.Parent=root
+-- ════════════════════════════════════════════════════════════
+-- SEARCHABLE FRUIT PICKER MODAL
+-- Parented to gui (not root) so it sits above everything and
+-- never causes the sendPanel ScrollingFrame to reset on mobile.
+-- ════════════════════════════════════════════════════════════
+local modalOpen = false
 
-local dropF = Instance.new("Frame"); dropF.BackgroundColor3=C.panel
-dropF.BorderSizePixel=0; dropF.Visible=false; dropF.ZIndex=51
-dropF.ClipsDescendants=true; dropF.Parent=root; mkCorner(dropF,8); mkStroke(dropF)
+-- dark full-screen scrim
+local scrim = Instance.new("TextButton")
+scrim.BackgroundColor3 = Color3.fromRGB(0,0,0)
+scrim.BackgroundTransparency = 0.4
+scrim.Text = ""; scrim.Size = UDim2.fromScale(1,1)
+scrim.Visible = false; scrim.ZIndex = 100
+scrim.AutoButtonColor = false; scrim.Parent = gui
 
-local dropS = Instance.new("ScrollingFrame"); dropS.BackgroundTransparency=1
-dropS.BorderSizePixel=0; dropS.Size=UDim2.fromScale(1,1); dropS.ScrollBarThickness=4
-dropS.AutomaticCanvasSize=Enum.AutomaticSize.Y; dropS.ZIndex=52; dropS.Parent=dropF
-mkPad(dropS,4,4,4,4); Instance.new("UIListLayout",dropS).Padding=UDim.new(0,4)
+-- modal card — centered on screen
+local modalW = math.min(SW - 32, WIN_W + 20)
+local modalH = math.min(SH - 80, 420)
+local modal = Instance.new("Frame")
+modal.AnchorPoint = Vector2.new(0.5,0.5)
+modal.Position = UDim2.fromScale(0.5,0.5)
+modal.Size = UDim2.fromOffset(modalW, modalH)
+modal.BackgroundColor3 = C.panel; modal.BorderSizePixel = 0
+modal.Visible = false; modal.ZIndex = 101; modal.Parent = gui
+mkCorner(modal, 10); mkStroke(modal, C.stroke, 1)
 
-local function closeDropdown()
-    scrim.Visible=false; dropF.Visible=false
-    for _,c in dropS:GetChildren() do
-        if c:IsA("GuiObject") and not c:IsA("UIListLayout") then c:Destroy() end
+-- modal header
+local modalHdr = Instance.new("Frame")
+modalHdr.Size = UDim2.new(1,0,0,40); modalHdr.BackgroundTransparency = 1
+modalHdr.ZIndex = 102; modalHdr.Parent = modal
+
+mkLabel(modalHdr, {Text="Select Fruit", Font=Enum.Font.GothamBold,
+    TextSize=FS_MD, TextColor3=C.text,
+    Size=UDim2.new(1,-40,1,0), Position=UDim2.fromOffset(10,0),
+    ZIndex=102})
+
+local modalClose = mkBtn(modalHdr, {
+    Size=UDim2.fromOffset(28,28), Position=UDim2.new(1,-34,0,6),
+    BackgroundColor3=C.red, Text="x", TextSize=FS_MD, ZIndex=103})
+
+-- search box
+local searchBox = mkBox(modal, {
+    Size=UDim2.new(1,-16,0,BTN_H),
+    Position=UDim2.fromOffset(8,44),
+    PlaceholderText="Search fruit name...",
+    TextSize=FS_SM, ZIndex=102})
+
+-- results scroll
+local resultsScroll = Instance.new("ScrollingFrame")
+resultsScroll.BackgroundTransparency = 1; resultsScroll.BorderSizePixel = 0
+resultsScroll.Position = UDim2.fromOffset(8, 44+BTN_H+6)
+resultsScroll.Size = UDim2.new(1,-16,1,-(44+BTN_H+6+8))
+resultsScroll.ScrollBarThickness = 4
+resultsScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+resultsScroll.ZIndex = 102; resultsScroll.Parent = modal
+mkPad(resultsScroll,4,4,4,4)
+local resultsLayout = Instance.new("UIListLayout",resultsScroll)
+resultsLayout.Padding = UDim.new(0,4); resultsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+local noResultsLbl = mkLabel(resultsScroll, {
+    Text="No fruits found", Size=UDim2.new(1,0,0,28), TextSize=FS_SM,
+    TextColor3=C.muted, TextXAlignment=Enum.TextXAlignment.Center, ZIndex=102})
+
+local function closeModal()
+    modalOpen = false
+    modal.Visible = false; scrim.Visible = false
+    searchBox.Text = ""
+end
+
+local function buildResults(query)
+    -- clear old rows (keep layout + noResultsLbl)
+    for _,c in resultsScroll:GetChildren() do
+        if c:IsA("TextButton") then c:Destroy() end
+    end
+    local q = query:lower():gsub("%s+","")
+    local filtered = currentFruits
+    if filterType then
+        filtered = {}
+        for _,f in currentFruits do if f.itemKey==filterType then table.insert(filtered,f) end end
+    end
+    local results = {}
+    for _,f in filtered do
+        if q=="" or f.label:lower():gsub("%s+",""):find(q,1,true) then
+            table.insert(results,f)
+        end
+    end
+    noResultsLbl.Visible = #results == 0
+    for i,fruit in ipairs(results) do
+        local row = mkBtn(resultsScroll, {
+            Size=UDim2.new(1,0,0,BTN_H+2), BackgroundColor3=C.field,
+            Text=fruit.label, Font=Enum.Font.Gotham, TextSize=FS_SM,
+            TextXAlignment=Enum.TextXAlignment.Left, ZIndex=103,
+            LayoutOrder=i})
+        mkPad(row,0,8,0,8)
+        local f=fruit
+        local function pick()
+            selectedFruit=f; pickBtn.Text=f.label; closeModal()
+        end
+        row.MouseButton1Click:Connect(pick)
+        row.TouchTap:Connect(pick)
     end
 end
-scrim.MouseButton1Click:Connect(closeDropdown)
 
-local currentFruits = {}
-local selectedFruit = nil
-local function refreshFruits()
-    currentFruits=getFruits()
+local function openModal()
+    if modalOpen then closeModal(); return end
+    if refreshFruits then refreshFruits() end
+    modalOpen=true; modal.Visible=true; scrim.Visible=true
+    buildResults("")
+    if not isMobile then searchBox:CaptureFocus() end
+end
+
+scrim.MouseButton1Click:Connect(closeModal)
+scrim.TouchTap:Connect(closeModal)
+modalClose.MouseButton1Click:Connect(closeModal)
+modalClose.TouchTap:Connect(closeModal)
+
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    buildResults(searchBox.Text)
+end)
+
+local function closeDropdown() closeModal(); closeTypeDropdown() end
+
+-- Define refreshFruits here (pickBtn and filterType are now both available)
+refreshFruits = function()
+    currentFruits = getFruits()
     if #currentFruits==0 then pickBtn.Text="No fruits"; selectedFruit=nil; return end
+    local filtered = currentFruits
+    if filterType then
+        filtered={}
+        for _,f in currentFruits do if f.itemKey==filterType then table.insert(filtered,f) end end
+    end
+    if #filtered==0 then
+        pickBtn.Text="No "..(filterType or "fruits").." found"; selectedFruit=nil; return
+    end
     if selectedFruit then
         local found=false
-        for _,f in currentFruits do if f.id==selectedFruit.id then selectedFruit=f; found=true; break end end
-        if not found then selectedFruit=currentFruits[1] end
-    else selectedFruit=currentFruits[1] end
+        for _,f in filtered do if f.id==selectedFruit.id then selectedFruit=f; found=true; break end end
+        if not found then selectedFruit=filtered[1] end
+    else selectedFruit=filtered[1] end
     pickBtn.Text=selectedFruit.label
 end
 
-pickBtn.MouseButton1Click:Connect(function()
-    refreshFruits()
-    if #currentFruits==0 then setStatus("No fruits in inventory.",true); return end
-    closeDropdown()
-    local bp=pickBtn.AbsolutePosition; local rp=root.AbsolutePosition
-    local dropW=pickBtn.AbsoluteSize.X
-    local menuH=math.min(#currentFruits*(BTN_H+4)+8, math.floor(SH*0.35))
-    dropF.Size=UDim2.fromOffset(dropW, menuH)
-    dropF.Position=UDim2.fromOffset(bp.X-rp.X, bp.Y-rp.Y+pickBtn.AbsoluteSize.Y+4)
-    for _,fruit in currentFruits do
-        local row=mkBtn(dropS,{Size=UDim2.new(1,0,0,BTN_H), BackgroundColor3=C.field,
-            Text=fruit.label, Font=Enum.Font.Gotham, TextSize=FS_SM,
-            TextXAlignment=Enum.TextXAlignment.Left, ZIndex=53})
-        mkPad(row,0,8,0,8)
-        local f=fruit
-        local function pick() selectedFruit=f; pickBtn.Text=f.label; closeDropdown() end
-        row.MouseButton1Click:Connect(pick); row.TouchTap:Connect(pick)
-    end
-    scrim.Visible=true; dropF.Visible=true
-end)
-pickBtn.TouchTap:Connect(function() pickBtn.MouseButton1Click:Fire() end)
+pickBtn.MouseButton1Click:Connect(openModal)
+pickBtn.TouchTap:Connect(openModal)
 
 -- ════════════════════════════════════════════════════════════
 -- CART
@@ -549,12 +748,12 @@ local cart={}
 
 local cartHdr=mkLabel(sendPanel,{Text="Cart  0 / "..MAX_CART,
     Size=UDim2.new(1,0,0,16), TextColor3=C.text,
-    Font=Enum.Font.GothamBold, TextSize=FS_SM, LayoutOrder=4})
+    Font=Enum.Font.GothamBold, TextSize=FS_SM, LayoutOrder=5})
 
 local cartScroll=Instance.new("ScrollingFrame"); cartScroll.BackgroundColor3=C.panel
 cartScroll.BorderSizePixel=0; cartScroll.Size=UDim2.new(1,0,0,CART_H)
 cartScroll.ScrollBarThickness=3; cartScroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
-cartScroll.ClipsDescendants=true; cartScroll.LayoutOrder=5; cartScroll.Parent=sendPanel
+cartScroll.ClipsDescendants=true; cartScroll.LayoutOrder=6; cartScroll.Parent=sendPanel
 mkCorner(cartScroll,6); mkStroke(cartScroll,C.stroke); mkPad(cartScroll,4,4,4,4)
 Instance.new("UIListLayout",cartScroll).Padding=UDim.new(0,3)
 
@@ -597,28 +796,32 @@ local function doAddOne()
 end
 addOneBtn.MouseButton1Click:Connect(doAddOne)
 
--- add all
+-- add all (respects type filter)
 local addAllBtn=mkBtn(sendPanel,{Size=UDim2.new(1,0,0,BTN_H),
     Text="Add All Fruits (up to "..MAX_CART..")",
-    BackgroundColor3=C.panel, TextColor3=C.text, TextSize=FS_SM, LayoutOrder=6})
+    BackgroundColor3=C.panel, TextColor3=C.text, TextSize=FS_SM, LayoutOrder=7})
 mkStroke(addAllBtn,C.stroke)
 local function doAddAll()
     refreshFruits(); local added=0
     for _,f in currentFruits do
         if #cart>=MAX_CART then break end
-        if f.id then
+        -- respect type filter: only add fruits matching filterType (or all if nil)
+        local typeMatch = filterType==nil or f.itemKey==filterType
+        if typeMatch and f.id then
             local dup=false
             for _,e in cart do if e.id==f.id then dup=true; break end end
             if not dup then table.insert(cart,{id=f.id,label=f.label,itemKey=f.itemKey}); added+=1 end
         end
     end
-    rebuildCart(); setStatus(added>0 and ("Added %d fruits"):format(added) or "Nothing new.",added==0)
+    rebuildCart()
+    local typeStr = filterType and (' "'..filterType..'"') or ""
+    setStatus(added>0 and ("Added %d%s fruits"):format(added,typeStr) or "Nothing new.",added==0)
 end
 addAllBtn.MouseButton1Click:Connect(doAddAll); addAllBtn.TouchTap:Connect(doAddAll)
 
 -- clear cart
 local clearCartBtn=mkBtn(sendPanel,{Size=UDim2.new(1,0,0,BTN_H),
-    BackgroundColor3=C.panel, TextColor3=C.muted, Text="Clear Cart", TextSize=FS_SM, LayoutOrder=7})
+    BackgroundColor3=C.panel, TextColor3=C.muted, Text="Clear Cart", TextSize=FS_SM, LayoutOrder=8})
 mkStroke(clearCartBtn,C.stroke)
 local function doClear() table.clear(cart); rebuildCart(); setStatus("Cart cleared.",false) end
 clearCartBtn.MouseButton1Click:Connect(doClear); clearCartBtn.TouchTap:Connect(doClear)
