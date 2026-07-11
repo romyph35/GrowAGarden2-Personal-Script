@@ -1,4 +1,9 @@
-
+---[[ Fruit Mail Sender  — responsive for PC, tablet & mobile
+     • 100 fruits max · auto-batched (20/call)
+     • Send tab + History tab
+     • Discord Webhook logging
+     • RightShift / on-screen button to toggle
+--]]
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -380,52 +385,58 @@ end
 
 -- Recipient row
 local recWrap = Instance.new("Frame"); recWrap.BackgroundTransparency=1
--- on mobile: no avatar, just box + Set button side by side (saves ~40px)
--- on PC/tablet: avatar + box + Set button
-local AV = BTN_H
-local recH = isMobile and (16+BTN_H+18) or (16+BTN_H+20)
+-- Avatar + box + Set on all devices; avatar is smaller on mobile
+local AV      = isMobile and 30 or BTN_H   -- avatar square size
+local SET_W   = isMobile and math.floor(WIN_W*0.20) or math.floor(WIN_W*0.16)
+local recH    = 16 + BTN_H + 18            -- label + row + info
 recWrap.Size=UDim2.new(1,0,0,recH)
-recWrap.ClipsDescendants=false; recWrap.LayoutOrder=2; recWrap.Parent=sendPanel
+recWrap.ClipsDescendants=true; recWrap.LayoutOrder=2; recWrap.Parent=sendPanel
 mkLabel(recWrap, {Text="Recipient", Size=UDim2.new(1,0,0,16), TextSize=FS_SM})
 
-local avFrame, avImg, avPH
-if not isMobile then
-    avFrame = Instance.new("Frame"); avFrame.Size=UDim2.fromOffset(AV,AV)
-    avFrame.Position=UDim2.fromOffset(0,18); avFrame.BackgroundColor3=C.field
-    avFrame.Parent=recWrap; mkCorner(avFrame,6); mkStroke(avFrame)
-    avImg = Instance.new("ImageLabel"); avImg.Size=UDim2.fromScale(1,1)
-    avImg.BackgroundTransparency=1; avImg.Parent=avFrame; mkCorner(avImg,6)
-    avPH = Instance.new("TextLabel"); avPH.Size=UDim2.fromScale(1,1)
-    avPH.BackgroundTransparency=1; avPH.Font=Enum.Font.GothamBold
-    avPH.TextSize=FS_LG; avPH.TextColor3=C.muted; avPH.Text="?"; avPH.Parent=avFrame
-end
+-- Avatar (always shown, clipped inside recWrap)
+local avFrame = Instance.new("Frame")
+avFrame.Size=UDim2.fromOffset(AV,AV)
+avFrame.Position=UDim2.new(0,0,0,18)   -- left of row, 18px from top (below label)
+avFrame.BackgroundColor3=C.field; avFrame.Parent=recWrap
+mkCorner(avFrame,6); mkStroke(avFrame)
 
-local SET_W  = isMobile and math.floor(WIN_W*0.22) or math.floor(WIN_W*0.16)
-local boxOff = isMobile and 0 or (AV+6)
+local avImg = Instance.new("ImageLabel"); avImg.Size=UDim2.fromScale(1,1)
+avImg.BackgroundTransparency=1; avImg.ScaleType=Enum.ScaleType.Crop
+avImg.Parent=avFrame; mkCorner(avImg,6)
+
+local avPH = Instance.new("TextLabel"); avPH.Size=UDim2.fromScale(1,1)
+avPH.BackgroundTransparency=1; avPH.Font=Enum.Font.GothamBold
+avPH.TextSize=isMobile and 13 or FS_LG
+avPH.TextColor3=C.muted; avPH.Text="?"; avPH.Parent=avFrame
+
+-- Text box: starts after avatar + 4px gap, ends before Set button
+local boxX   = AV + 4
+local boxW   = SET_W + 6   -- Set button width + small gap
 local recBox = mkBox(recWrap, {
-    Size=UDim2.new(1,-(SET_W+boxOff+6),0,BTN_H),
-    Position=UDim2.fromOffset(boxOff,18),
+    Size=UDim2.new(1,-(boxX+boxW),0,BTN_H),
+    Position=UDim2.fromOffset(boxX, 18),
     PlaceholderText="Username or UserId", TextSize=FS_MD})
+
 local setRecBtn = mkBtn(recWrap, {
-    Size=UDim2.fromOffset(SET_W,BTN_H),
-    Position=UDim2.new(1,-SET_W,0,18),
+    Size=UDim2.fromOffset(SET_W, BTN_H),
+    Position=UDim2.new(1,-SET_W, 0, 18),
     Text="Set", TextSize=FS_MD})
+
 local recInfo = mkLabel(recWrap, {Text="No recipient set",
-    Size=UDim2.new(1,0,0,16), Position=UDim2.fromOffset(0,18+BTN_H+3),
+    Size=UDim2.new(1,0,0,16), Position=UDim2.fromOffset(0, 18+BTN_H+3),
     TextColor3=C.muted, TextSize=FS_SM})
 
 local resolvedId, resolvedName, lookupBusy = nil, nil, false
 local function setAvatar(uid)
-    if avPH then avPH.Visible=true end
-    if avImg then avImg.Image="" end
+    avPH.Visible=true; avImg.Image=""
     task.spawn(function()
         local url=MIC.GetHeadshot(uid)
-        if url~="" and avImg and avImg.Parent then avImg.Image=url; if avPH then avPH.Visible=false end end
+        if url~="" and avImg.Parent then avImg.Image=url; avPH.Visible=false end
     end)
 end
 local function clearRecip()
     resolvedId,resolvedName=nil,nil
-    if avImg then avImg.Image="" end; if avPH then avPH.Visible=true end
+    avImg.Image=""; avPH.Visible=true
     recInfo.Text="No recipient set"; recInfo.TextColor3=C.muted
 end
 local function resolveRecip()
