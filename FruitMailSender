@@ -1,9 +1,4 @@
----[[ Fruit Mail Sender  — responsive for PC, tablet & mobile
-  --   • 100 fruits max · auto-batched (20/call)
-  --   • Send tab + History tab
-  --   • Discord Webhook logging
- --    • RightShift / on-screen button to toggle
---]]
+
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -62,14 +57,14 @@ local SH         = cam.ViewportSize.Y
 -- window size
 local WIN_W, WIN_H
 if isMobile then
-    WIN_W = math.min(SW - 20, 300)
-    WIN_H = math.min(SH - 60, 580)
+    WIN_W = math.min(SW - 16, 300)
+    WIN_H = math.min(SH - 80, 500)   -- leave room for Roblox UI bars
 elseif isTablet then
     WIN_W = math.min(SW * 0.55, 380)
-    WIN_H = math.min(SH * 0.85, 620)
+    WIN_H = math.min(SH * 0.80, 600)
 else
     WIN_W = 340
-    WIN_H = 620
+    WIN_H = 600
 end
 
 -- font sizes
@@ -78,14 +73,14 @@ local FS_MD  = isMobile and 11 or 13
 local FS_SM  = isMobile and 10 or 11
 
 -- row heights
-local HDR_H  = isMobile and 44 or 54
-local TAB_H  = isMobile and 30 or 36
-local ROW_H  = isMobile and 28 or 34
-local BTN_H  = isMobile and 26 or 32
-local CART_H = isMobile and 80  or 100
+local HDR_H  = isMobile and 42 or 54
+local TAB_H  = isMobile and 28 or 36
+local ROW_H  = isMobile and 24 or 34
+local BTN_H  = isMobile and 28 or 32
+local CART_H = isMobile and 70  or 100
 
 -- padding
-local PAD    = isMobile and 8 or 12
+local PAD    = isMobile and 6 or 12
 
 local BODY_Y = HDR_H + TAB_H   -- panels start here
 
@@ -304,8 +299,25 @@ tabHist.TouchTap:Connect(function() tabHist.MouseButton1Click:Fire() end)
 
 -- ════════════════════════════════════════════════════════════
 -- PANELS
+-- Send panel = ScrollingFrame so all content is reachable on small screens
 -- ════════════════════════════════════════════════════════════
-local function mkPanel(visible)
+local function mkScrollPanel(visible)
+    local f = Instance.new("ScrollingFrame")
+    f.BackgroundTransparency=1; f.BorderSizePixel=0
+    f.Position=UDim2.fromOffset(0, BODY_Y)
+    f.Size=UDim2.new(1,0,1,-BODY_Y)
+    f.CanvasSize=UDim2.new(0,0,0,0)
+    f.AutomaticCanvasSize=Enum.AutomaticSize.Y
+    f.ScrollBarThickness=isMobile and 3 or 4
+    f.ScrollBarImageColor3=C.accent
+    f.ScrollingDirection=Enum.ScrollingDirection.Y
+    f.ClipsDescendants=true; f.Visible=visible; f.Parent=root
+    mkPad(f, PAD-2, PAD, PAD, PAD)
+    local ll = Instance.new("UIListLayout",f)
+    ll.Padding=UDim.new(0,6); ll.SortOrder=Enum.SortOrder.LayoutOrder
+    return f
+end
+local function mkFlatPanel(visible)
     local f = Instance.new("Frame"); f.BackgroundTransparency=1
     f.Position=UDim2.fromOffset(0, BODY_Y)
     f.Size=UDim2.new(1,0,1,-BODY_Y)
@@ -315,8 +327,8 @@ local function mkPanel(visible)
     ll.Padding=UDim.new(0,6); ll.SortOrder=Enum.SortOrder.LayoutOrder
     return f
 end
-local sendPanel = mkPanel(true)
-local histPanel = mkPanel(false)
+local sendPanel = mkScrollPanel(true)   -- scrollable so nothing gets cut off
+local histPanel = mkFlatPanel(false)
 
 -- ════════════════════════════════════════════════════════════
 -- TAB SWITCH
@@ -346,53 +358,74 @@ local function setStatus(msg, isErr)
     statusLbl.Text=msg; statusLbl.TextColor3=isErr and C.red or C.green
 end
 
--- Webhook row
+-- Webhook row — collapsible on mobile to save space
 local whWrap = Instance.new("Frame"); whWrap.BackgroundTransparency=1
-whWrap.Size=UDim2.new(1,0,0,BTN_H+18); whWrap.LayoutOrder=1; whWrap.Parent=sendPanel
-mkLabel(whWrap, {Text="Discord Webhook (optional)", Size=UDim2.new(1,0,0,16), TextSize=FS_SM})
-local whBox = mkBox(whWrap, {Size=UDim2.new(1,0,0,BTN_H), Position=UDim2.fromOffset(0,16),
-    PlaceholderText="https://discord.com/api/webhooks/...", TextSize=FS_SM, Text=WEBHOOK_URL})
-whBox:GetPropertyChangedSignal("Text"):Connect(function() WEBHOOK_URL=whBox.Text:gsub("%s","") end)
+whWrap.LayoutOrder=1; whWrap.Parent=sendPanel
+
+if isMobile then
+    -- one-line tap-to-edit on mobile
+    whWrap.Size=UDim2.new(1,0,0,BTN_H)
+    local whBox = mkBox(whWrap,{
+        Size=UDim2.new(1,0,0,BTN_H), Position=UDim2.fromOffset(0,0),
+        PlaceholderText="Webhook URL (tap)", TextSize=FS_SM, Text=WEBHOOK_URL})
+    whBox:GetPropertyChangedSignal("Text"):Connect(function() WEBHOOK_URL=whBox.Text:gsub("%s","") end)
+else
+    whWrap.Size=UDim2.new(1,0,0,BTN_H+18)
+    mkLabel(whWrap,{Text="Discord Webhook (optional)", Size=UDim2.new(1,0,0,16), TextSize=FS_SM})
+    local whBox = mkBox(whWrap,{
+        Size=UDim2.new(1,0,0,BTN_H), Position=UDim2.fromOffset(0,16),
+        PlaceholderText="https://discord.com/api/webhooks/...", TextSize=FS_SM, Text=WEBHOOK_URL})
+    whBox:GetPropertyChangedSignal("Text"):Connect(function() WEBHOOK_URL=whBox.Text:gsub("%s","") end)
+end
 
 -- Recipient row
 local recWrap = Instance.new("Frame"); recWrap.BackgroundTransparency=1
-recWrap.Size=UDim2.new(1,0,0, ROW_H+BTN_H+8)
+-- on mobile: no avatar, just box + Set button side by side (saves ~40px)
+-- on PC/tablet: avatar + box + Set button
+local AV = BTN_H
+local recH = isMobile and (16+BTN_H+18) or (16+BTN_H+20)
+recWrap.Size=UDim2.new(1,0,0,recH)
 recWrap.ClipsDescendants=false; recWrap.LayoutOrder=2; recWrap.Parent=sendPanel
 mkLabel(recWrap, {Text="Recipient", Size=UDim2.new(1,0,0,16), TextSize=FS_SM})
 
-local AV = BTN_H  -- avatar size = button height
-local avFrame = Instance.new("Frame"); avFrame.Size=UDim2.fromOffset(AV,AV)
-avFrame.Position=UDim2.fromOffset(0,18); avFrame.BackgroundColor3=C.field
-avFrame.Parent=recWrap; mkCorner(avFrame,6); mkStroke(avFrame)
-local avImg = Instance.new("ImageLabel"); avImg.Size=UDim2.fromScale(1,1)
-avImg.BackgroundTransparency=1; avImg.Parent=avFrame; mkCorner(avImg,6)
-local avPH = Instance.new("TextLabel"); avPH.Size=UDim2.fromScale(1,1)
-avPH.BackgroundTransparency=1; avPH.Font=Enum.Font.GothamBold
-avPH.TextSize=FS_LG; avPH.TextColor3=C.muted; avPH.Text="?"; avPH.Parent=avFrame
+local avFrame, avImg, avPH
+if not isMobile then
+    avFrame = Instance.new("Frame"); avFrame.Size=UDim2.fromOffset(AV,AV)
+    avFrame.Position=UDim2.fromOffset(0,18); avFrame.BackgroundColor3=C.field
+    avFrame.Parent=recWrap; mkCorner(avFrame,6); mkStroke(avFrame)
+    avImg = Instance.new("ImageLabel"); avImg.Size=UDim2.fromScale(1,1)
+    avImg.BackgroundTransparency=1; avImg.Parent=avFrame; mkCorner(avImg,6)
+    avPH = Instance.new("TextLabel"); avPH.Size=UDim2.fromScale(1,1)
+    avPH.BackgroundTransparency=1; avPH.Font=Enum.Font.GothamBold
+    avPH.TextSize=FS_LG; avPH.TextColor3=C.muted; avPH.Text="?"; avPH.Parent=avFrame
+end
 
-local SET_W = math.floor(WIN_W * 0.16)
+local SET_W  = isMobile and math.floor(WIN_W*0.22) or math.floor(WIN_W*0.16)
+local boxOff = isMobile and 0 or (AV+6)
 local recBox = mkBox(recWrap, {
-    Size=UDim2.new(1,-(AV+SET_W+12),0,BTN_H),
-    Position=UDim2.fromOffset(AV+6,18),
+    Size=UDim2.new(1,-(SET_W+boxOff+6),0,BTN_H),
+    Position=UDim2.fromOffset(boxOff,18),
     PlaceholderText="Username or UserId", TextSize=FS_MD})
 local setRecBtn = mkBtn(recWrap, {
     Size=UDim2.fromOffset(SET_W,BTN_H),
     Position=UDim2.new(1,-SET_W,0,18),
     Text="Set", TextSize=FS_MD})
 local recInfo = mkLabel(recWrap, {Text="No recipient set",
-    Size=UDim2.new(1,0,0,16), Position=UDim2.fromOffset(0,18+BTN_H+4),
+    Size=UDim2.new(1,0,0,16), Position=UDim2.fromOffset(0,18+BTN_H+3),
     TextColor3=C.muted, TextSize=FS_SM})
 
 local resolvedId, resolvedName, lookupBusy = nil, nil, false
 local function setAvatar(uid)
-    avPH.Visible=true; avImg.Image=""
+    if avPH then avPH.Visible=true end
+    if avImg then avImg.Image="" end
     task.spawn(function()
         local url=MIC.GetHeadshot(uid)
-        if url~="" and avImg.Parent then avImg.Image=url; avPH.Visible=false end
+        if url~="" and avImg and avImg.Parent then avImg.Image=url; if avPH then avPH.Visible=false end end
     end)
 end
 local function clearRecip()
-    resolvedId,resolvedName=nil,nil; avImg.Image=""; avPH.Visible=true
+    resolvedId,resolvedName=nil,nil
+    if avImg then avImg.Image="" end; if avPH then avPH.Visible=true end
     recInfo.Text="No recipient set"; recInfo.TextColor3=C.muted
 end
 local function resolveRecip()
