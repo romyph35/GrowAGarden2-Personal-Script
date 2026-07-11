@@ -1,3 +1,9 @@
+---[[ Fruit Mail Sender  — responsive for PC, tablet & mobile
+  --   • 100 fruits max · auto-batched (20/call)
+  --   • Send tab + History tab
+  --   • Discord Webhook logging
+ --    • RightShift / on-screen button to toggle
+--]]
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -39,7 +45,7 @@ local httpReq = (syn and syn.request) or (http and http.request)
 local WEBHOOK_URL  = ""
 local MAX_CART     = 100
 local SERVER_CHUNK = 20
-local BATCH_DELAY  = 5
+local BATCH_DELAY  = 2
 
 -- ════════════════════════════════════════════════════════════
 -- RESPONSIVE SCALE
@@ -239,7 +245,7 @@ header.ZIndex=5; header.Parent=root
 local tw = Instance.new("Frame"); tw.BackgroundTransparency=1
 tw.Size=UDim2.new(1,-70,1,0); tw.Parent=header
 mkPad(tw, math.floor(HDR_H*0.2), 0, 0, PAD)
-mkLabel(tw, {Text="🍎 Fruit Mail Sender by Roms", Font=Enum.Font.GothamBold,
+mkLabel(tw, {Text="🍎 Fruit Mail Sender", Font=Enum.Font.GothamBold,
     TextSize=FS_LG, TextColor3=C.text,
     Size=UDim2.new(1,0,0,math.floor(HDR_H*0.45)),
     Position=UDim2.fromOffset(0, math.floor(HDR_H*0.1))})
@@ -457,7 +463,8 @@ local function closeDropdown()
 end
 scrim.MouseButton1Click:Connect(closeDropdown)
 
-local currentFruits={}, selectedFruit=nil
+local currentFruits = {}
+local selectedFruit = nil
 local function refreshFruits()
     currentFruits=getFruits()
     if #currentFruits==0 then pickBtn.Text="No fruits"; selectedFruit=nil; return end
