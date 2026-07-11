@@ -1,0 +1,804 @@
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService  = game:GetService("UserInputService")
+local TweenService      = game:GetService("TweenService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+local Networking  = require(ReplicatedStorage
+    :WaitForChild("SharedModules"):WaitForChild("Networking"))
+
+-- ── MailboxItemCatalog
+local MIC
+do
+    local ok, mod = pcall(function()
+        return require(LocalPlayer:WaitForChild("PlayerScripts")
+            :WaitForChild("Controllers")
+            :WaitForChild("MailboxController", 10)
+            :FindFirstChild("MailboxItemCatalog"))
+    end)
+    MIC = ok and mod or {
+        GetHeadshot = function(uid)
+            local ok2, url = pcall(function()
+                return Players:GetUserThumbnailAsync(uid,
+                    Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+            end)
+            return ok2 and url or ""
+        end
+    }
+end
+
+-- ── Executor HTTP
+local httpReq = (syn and syn.request) or (http and http.request)
+    or (http_request) or (request) or nil
+
+-- ════════════════════════════════════════════════════════════
+-- CONFIG
+-- ════════════════════════════════════════════════════════════
+local WEBHOOK_URL  = ""
+local MAX_CART     = 100
+local SERVER_CHUNK = 20
+local BATCH_DELAY  = 2
+
+-- ════════════════════════════════════════════════════════════
+-- RESPONSIVE SCALE
+-- Detects device type and picks appropriate sizes.
+-- ════════════════════════════════════════════════════════════
+local isMobile  = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+local isTablet  = UserInputService.TouchEnabled and UserInputService.MouseEnabled
+
+-- base width as fraction of screen
+local cam        = workspace.CurrentCamera
+local SW         = cam.ViewportSize.X
+local SH         = cam.ViewportSize.Y
+
+-- window size
+local WIN_W, WIN_H
+if isMobile then
+    WIN_W = math.min(SW - 20, 300)
+    WIN_H = math.min(SH - 60, 580)
+elseif isTablet then
+    WIN_W = math.min(SW * 0.55, 380)
+    WIN_H = math.min(SH * 0.85, 620)
+else
+    WIN_W = 340
+    WIN_H = 620
+end
+
+-- font sizes
+local FS_LG  = isMobile and 13 or 16
+local FS_MD  = isMobile and 11 or 13
+local FS_SM  = isMobile and 10 or 11
+
+-- row heights
+local HDR_H  = isMobile and 44 or 54
+local TAB_H  = isMobile and 30 or 36
+local ROW_H  = isMobile and 28 or 34
+local BTN_H  = isMobile and 26 or 32
+local CART_H = isMobile and 80  or 100
+
+-- padding
+local PAD    = isMobile and 8 or 12
+
+local BODY_Y = HDR_H + TAB_H   -- panels start here
+
+-- ════════════════════════════════════════════════════════════
+-- THEME
+-- ════════════════════════════════════════════════════════════
+local C = {
+    bg      = Color3.fromRGB(18,20,26),
+    panel   = Color3.fromRGB(24,27,34),
+    field   = Color3.fromRGB(32,36,46),
+    stroke  = Color3.fromRGB(45,52,68),
+    accent  = Color3.fromRGB(58,130,246),
+    aDark   = Color3.fromRGB(42,98,200),
+    green   = Color3.fromRGB(72,199,116),
+    orange  = Color3.fromRGB(251,146,60),
+    red     = Color3.fromRGB(220,70,70),
+    text    = Color3.fromRGB(235,238,245),
+    muted   = Color3.fromRGB(140,148,165),
+    histRow = Color3.fromRGB(28,32,42),
+}
+
+-- ════════════════════════════════════════════════════════════
+-- UI HELPERS
+-- ════════════════════════════════════════════════════════════
+local function mkCorner(p, r)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r or 6); c.Parent = p; return c
+end
+local function mkStroke(p, col, t)
+    local s = Instance.new("UIStroke")
+    s.Color = col or C.stroke; s.Thickness = t or 1
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = p; return s
+end
+local function mkPad(p, t, r, b, l)
+    local v = Instance.new("UIPadding")
+    v.PaddingTop    = UDim.new(0, t or PAD)
+    v.PaddingRight  = UDim.new(0, r or PAD)
+    v.PaddingBottom = UDim.new(0, b or PAD)
+    v.PaddingLeft   = UDim.new(0, l or PAD)
+    v.Parent = p; return v
+end
+local function mkLabel(parent, props)
+    local l = Instance.new("TextLabel"); l.BackgroundTransparency = 1
+    l.Font = Enum.Font.GothamMedium; l.TextSize = FS_MD; l.TextColor3 = C.muted
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    for k, v in props do l[k] = v end; l.Parent = parent; return l
+end
+local function mkBox(parent, props)
+    local t = Instance.new("TextBox"); t.BackgroundColor3 = C.field
+    t.TextColor3 = C.text; t.PlaceholderColor3 = C.muted
+    t.Font = Enum.Font.Gotham; t.TextSize = FS_MD
+    t.ClearTextOnFocus = false; t.Text = ""
+    for k, v in props do t[k] = v end
+    mkCorner(t, 6); mkStroke(t); t.Parent = parent; return t
+end
+local function mkBtn(parent, props)
+    local b = Instance.new("TextButton"); b.AutoButtonColor = true
+    b.BackgroundColor3 = C.accent; b.TextColor3 = Color3.new(1,1,1)
+    b.Font = Enum.Font.GothamBold; b.TextSize = FS_MD; b.Text = "Button"
+    for k, v in props do b[k] = v end
+    mkCorner(b, 6); b.Parent = parent; return b
+end
+local function fmtTime(t) return os.date("%H:%M:%S", t) end
+
+-- ════════════════════════════════════════════════════════════
+-- FRUIT SCANNER
+-- ════════════════════════════════════════════════════════════
+local function getFruits()
+    local list, seen = {}, {}
+    local function scan(c)
+        if not c then return end
+        for _, item in c:GetChildren() do
+            local fn = item:GetAttribute("Fruit")
+            if fn and not seen[item] then
+                seen[item] = true
+                local mut = item:GetAttribute("Mutation")
+                local wt  = item:GetAttribute("Weight")
+                local id  = item:GetAttribute("Id")
+                local lbl = fn
+                if mut and mut ~= "" then lbl = mut.." "..fn end
+                if wt then lbl = lbl..string.format(" (%.1fg)", wt) end
+                table.insert(list, {id=id, label=lbl, itemKey=fn, mutation=mut, weight=wt})
+            end
+        end
+    end
+    scan(LocalPlayer.Character)
+    scan(LocalPlayer:FindFirstChild("Backpack"))
+    table.sort(list, function(a,b) return a.label:lower() < b.label:lower() end)
+    return list
+end
+
+-- ════════════════════════════════════════════════════════════
+-- MAIL HISTORY
+-- ════════════════════════════════════════════════════════════
+local MAX_HIST = 50
+local mailHistory = {}
+local function addHistory(rName, rId, labels, count)
+    table.insert(mailHistory, 1, {time=os.time(), recipient=rName or "?",
+        recipId=rId, count=count, fruits=labels})
+    if #mailHistory > MAX_HIST then table.remove(mailHistory) end
+end
+
+-- ════════════════════════════════════════════════════════════
+-- DISCORD WEBHOOK
+-- ════════════════════════════════════════════════════════════
+local function sendWebhook(rName, rId, labels, count)
+    if WEBHOOK_URL == "" or not httpReq then return end
+    task.spawn(function()
+        local lines = {}
+        for i, lbl in ipairs(labels) do
+            if i > 25 then table.insert(lines, ("... +%d more"):format(#labels-25)); break end
+            table.insert(lines, lbl)
+        end
+        local function esc(s) return tostring(s):gsub('"','\\"'):gsub("\n","\\n") end
+        local body = ('{"username":"Fruit Mail Sender","embeds":[{'..
+            '"title":"Fruit Mail Sent","color":16744272,"fields":['..
+            '{"name":"Sender","value":"%s","inline":true},'..
+            '{"name":"Recipient","value":"@%s (ID: %s)","inline":true},'..
+            '{"name":"Sent","value":"**%d fruit(s)**","inline":true},'..
+            '{"name":"Fruits","value":"```\\n%s\\n```","inline":false}'..
+            '],"footer":{"text":"Fruit Mail Sender"},"timestamp":"%s"}]}'):format(
+            esc(LocalPlayer.DisplayName.." (@"..LocalPlayer.Name..")"),
+            esc(rName), esc(tostring(rId or "?")), count,
+            esc(#lines>0 and table.concat(lines,"\n") or "—"),
+            os.date("!%Y-%m-%dT%H:%M:%SZ"))
+        pcall(httpReq, {Url=WEBHOOK_URL, Method="POST",
+            Headers={["Content-Type"]="application/json"}, Body=body})
+    end)
+end
+
+-- ════════════════════════════════════════════════════════════
+-- GUI ROOT
+-- ════════════════════════════════════════════════════════════
+do local old = PlayerGui:FindFirstChild("FruitMailSender"); if old then old:Destroy() end end
+
+local gui = Instance.new("ScreenGui")
+gui.Name="FruitMailSender"; gui.ResetOnSpawn=false
+gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+gui.IgnoreGuiInset=true; gui.Parent=PlayerGui
+
+local root = Instance.new("Frame")
+root.Name="Root"; root.AnchorPoint=Vector2.new(0.5,0.5)
+root.Position=UDim2.fromScale(0.5, 0.5)
+root.Size=UDim2.fromOffset(WIN_W, WIN_H)
+root.BackgroundColor3=C.bg; root.BorderSizePixel=0
+root.ClipsDescendants=true; root.Parent=gui
+mkCorner(root, 10); mkStroke(root, C.stroke, 1)
+
+-- ════════════════════════════════════════════════════════════
+-- HEADER
+-- ════════════════════════════════════════════════════════════
+local header = Instance.new("Frame")
+header.Size=UDim2.new(1,0,0,HDR_H); header.BackgroundTransparency=1
+header.ZIndex=5; header.Parent=root
+
+-- title
+local tw = Instance.new("Frame"); tw.BackgroundTransparency=1
+tw.Size=UDim2.new(1,-70,1,0); tw.Parent=header
+mkPad(tw, math.floor(HDR_H*0.2), 0, 0, PAD)
+mkLabel(tw, {Text="🍎 Fruit Mail Sender", Font=Enum.Font.GothamBold,
+    TextSize=FS_LG, TextColor3=C.text,
+    Size=UDim2.new(1,0,0,math.floor(HDR_H*0.45)),
+    Position=UDim2.fromOffset(0, math.floor(HDR_H*0.1))})
+mkLabel(tw, {Text="100 max · auto-batched · webhook",
+    TextSize=FS_SM, Size=UDim2.new(1,0,0,math.floor(HDR_H*0.35)),
+    Position=UDim2.fromOffset(0, math.floor(HDR_H*0.55))})
+
+-- chrome buttons
+local CB = math.min(24, math.floor(HDR_H*0.48))
+local function chromeBtn(text, xOff)
+    local b = mkBtn(header, {Size=UDim2.fromOffset(CB,CB),
+        Position=UDim2.new(1,xOff,0.5,-CB/2),
+        BackgroundColor3=C.panel, Text=text, TextSize=FS_MD, ZIndex=6})
+    mkStroke(b); return b
+end
+local minBtn   = chromeBtn("-", -(CB*2+8))
+local closeBtn = chromeBtn("x", -(CB+4))
+
+-- header bottom line
+local hLine = Instance.new("Frame"); hLine.Size=UDim2.new(1,0,0,1)
+hLine.Position=UDim2.new(0,0,1,-1); hLine.BackgroundColor3=C.stroke
+hLine.BorderSizePixel=0; hLine.Parent=header
+
+-- ════════════════════════════════════════════════════════════
+-- TAB BAR
+-- ════════════════════════════════════════════════════════════
+local tabBar = Instance.new("Frame")
+tabBar.Name="TabBar"; tabBar.Size=UDim2.new(1,0,0,TAB_H)
+tabBar.Position=UDim2.new(0,0,0,HDR_H)
+tabBar.BackgroundColor3=C.panel; tabBar.BorderSizePixel=0; tabBar.ZIndex=3; tabBar.Parent=root
+
+local tabSep = Instance.new("Frame"); tabSep.Size=UDim2.new(1,0,0,1)
+tabSep.Position=UDim2.new(0,0,1,-1); tabSep.BackgroundColor3=C.stroke
+tabSep.BorderSizePixel=0; tabSep.Parent=tabBar
+
+local tabSend = mkBtn(tabBar, {Name="TabSend", Size=UDim2.new(0.5,0,1,-1),
+    Position=UDim2.new(0,0,0,0), BackgroundColor3=C.panel, TextColor3=C.text,
+    Text="Send", TextSize=FS_MD, Font=Enum.Font.GothamBold,
+    BorderSizePixel=0, ZIndex=4})
+tabSend.AutoButtonColor=false; mkCorner(tabSend,0)
+
+local tabHist = mkBtn(tabBar, {Name="TabHistory", Size=UDim2.new(0.5,0,1,-1),
+    Position=UDim2.new(0.5,0,0,0), BackgroundColor3=C.panel, TextColor3=C.muted,
+    Text="History", TextSize=FS_MD, Font=Enum.Font.GothamBold,
+    BorderSizePixel=0, ZIndex=4})
+tabHist.AutoButtonColor=false; mkCorner(tabHist,0)
+
+-- underline indicator
+local tabLine = Instance.new("Frame"); tabLine.Size=UDim2.new(0.5,-16,0,2)
+tabLine.Position=UDim2.new(0,8,1,-2); tabLine.BackgroundColor3=C.accent
+tabLine.BorderSizePixel=0; tabLine.ZIndex=5; tabLine.Parent=tabBar; mkCorner(tabLine,2)
+
+-- mobile touch support on tabs
+tabSend.TouchTap:Connect(function() tabSend.MouseButton1Click:Fire() end)
+tabHist.TouchTap:Connect(function() tabHist.MouseButton1Click:Fire() end)
+
+-- ════════════════════════════════════════════════════════════
+-- PANELS
+-- ════════════════════════════════════════════════════════════
+local function mkPanel(visible)
+    local f = Instance.new("Frame"); f.BackgroundTransparency=1
+    f.Position=UDim2.fromOffset(0, BODY_Y)
+    f.Size=UDim2.new(1,0,1,-BODY_Y)
+    f.ClipsDescendants=true; f.Visible=visible; f.Parent=root
+    mkPad(f, PAD-2, PAD, PAD, PAD)
+    local ll = Instance.new("UIListLayout",f)
+    ll.Padding=UDim.new(0,6); ll.SortOrder=Enum.SortOrder.LayoutOrder
+    return f
+end
+local sendPanel = mkPanel(true)
+local histPanel = mkPanel(false)
+
+-- ════════════════════════════════════════════════════════════
+-- TAB SWITCH
+-- ════════════════════════════════════════════════════════════
+local function switchTab(t)
+    if t=="send" then
+        sendPanel.Visible=true; histPanel.Visible=false
+        tabSend.TextColor3=C.text; tabHist.TextColor3=C.muted
+        tabLine.Position=UDim2.new(0,8,1,-2)
+    else
+        sendPanel.Visible=false; histPanel.Visible=true
+        tabSend.TextColor3=C.muted; tabHist.TextColor3=C.text
+        tabLine.Position=UDim2.new(0.5,8,1,-2)
+    end
+end
+tabSend.MouseButton1Click:Connect(function() switchTab("send") end)
+tabHist.MouseButton1Click:Connect(function() switchTab("history") end)
+
+-- ════════════════════════════════════════════════════════════
+-- SEND PANEL CONTENT
+-- ════════════════════════════════════════════════════════════
+
+-- Status
+local statusLbl = mkLabel(sendPanel, {Text="", Size=UDim2.new(1,0,0,ROW_H-4),
+    TextColor3=C.green, TextWrapped=true, LayoutOrder=0})
+local function setStatus(msg, isErr)
+    statusLbl.Text=msg; statusLbl.TextColor3=isErr and C.red or C.green
+end
+
+-- Webhook row
+local whWrap = Instance.new("Frame"); whWrap.BackgroundTransparency=1
+whWrap.Size=UDim2.new(1,0,0,BTN_H+18); whWrap.LayoutOrder=1; whWrap.Parent=sendPanel
+mkLabel(whWrap, {Text="Discord Webhook (optional)", Size=UDim2.new(1,0,0,16), TextSize=FS_SM})
+local whBox = mkBox(whWrap, {Size=UDim2.new(1,0,0,BTN_H), Position=UDim2.fromOffset(0,16),
+    PlaceholderText="https://discord.com/api/webhooks/...", TextSize=FS_SM, Text=WEBHOOK_URL})
+whBox:GetPropertyChangedSignal("Text"):Connect(function() WEBHOOK_URL=whBox.Text:gsub("%s","") end)
+
+-- Recipient row
+local recWrap = Instance.new("Frame"); recWrap.BackgroundTransparency=1
+recWrap.Size=UDim2.new(1,0,0, ROW_H+BTN_H+8)
+recWrap.ClipsDescendants=false; recWrap.LayoutOrder=2; recWrap.Parent=sendPanel
+mkLabel(recWrap, {Text="Recipient", Size=UDim2.new(1,0,0,16), TextSize=FS_SM})
+
+local AV = BTN_H  -- avatar size = button height
+local avFrame = Instance.new("Frame"); avFrame.Size=UDim2.fromOffset(AV,AV)
+avFrame.Position=UDim2.fromOffset(0,18); avFrame.BackgroundColor3=C.field
+avFrame.Parent=recWrap; mkCorner(avFrame,6); mkStroke(avFrame)
+local avImg = Instance.new("ImageLabel"); avImg.Size=UDim2.fromScale(1,1)
+avImg.BackgroundTransparency=1; avImg.Parent=avFrame; mkCorner(avImg,6)
+local avPH = Instance.new("TextLabel"); avPH.Size=UDim2.fromScale(1,1)
+avPH.BackgroundTransparency=1; avPH.Font=Enum.Font.GothamBold
+avPH.TextSize=FS_LG; avPH.TextColor3=C.muted; avPH.Text="?"; avPH.Parent=avFrame
+
+local SET_W = math.floor(WIN_W * 0.16)
+local recBox = mkBox(recWrap, {
+    Size=UDim2.new(1,-(AV+SET_W+12),0,BTN_H),
+    Position=UDim2.fromOffset(AV+6,18),
+    PlaceholderText="Username or UserId", TextSize=FS_MD})
+local setRecBtn = mkBtn(recWrap, {
+    Size=UDim2.fromOffset(SET_W,BTN_H),
+    Position=UDim2.new(1,-SET_W,0,18),
+    Text="Set", TextSize=FS_MD})
+local recInfo = mkLabel(recWrap, {Text="No recipient set",
+    Size=UDim2.new(1,0,0,16), Position=UDim2.fromOffset(0,18+BTN_H+4),
+    TextColor3=C.muted, TextSize=FS_SM})
+
+local resolvedId, resolvedName, lookupBusy = nil, nil, false
+local function setAvatar(uid)
+    avPH.Visible=true; avImg.Image=""
+    task.spawn(function()
+        local url=MIC.GetHeadshot(uid)
+        if url~="" and avImg.Parent then avImg.Image=url; avPH.Visible=false end
+    end)
+end
+local function clearRecip()
+    resolvedId,resolvedName=nil,nil; avImg.Image=""; avPH.Visible=true
+    recInfo.Text="No recipient set"; recInfo.TextColor3=C.muted
+end
+local function resolveRecip()
+    if lookupBusy then return false end
+    local raw=recBox.Text:gsub("^%s*@?",""):gsub("%s+$","")
+    if raw=="" then clearRecip(); setStatus("Enter a username or UserId.",true); return false end
+    local num=tonumber(raw)
+    if num and num>0 then
+        resolvedId=num; resolvedName="User"..num; setAvatar(num)
+        recInfo.Text=("@%s  (ID: %d)"):format(resolvedName,num)
+        recInfo.TextColor3=C.text; setStatus("Recipient set.",false); return true
+    end
+    if #raw<3 or #raw>20 or not raw:match("^[%w_]+$") then
+        setStatus("Invalid username.",true); return false
+    end
+    lookupBusy=true; setRecBtn.Text="..."; setRecBtn.BackgroundColor3=C.aDark
+    local ok,uid,dn=pcall(function() return Networking.Mailbox.LookupPlayer:Fire(raw) end)
+    lookupBusy=false; setRecBtn.Text="Set"; setRecBtn.BackgroundColor3=C.accent
+    if not ok or type(uid)~="number" or uid<=0 then
+        clearRecip(); setStatus("Player not found.",true); return false
+    end
+    resolvedId=uid; resolvedName=(dn~="" and dn) or raw; setAvatar(uid)
+    recInfo.Text=("@%s  (ID: %d)"):format(resolvedName,uid)
+    recInfo.TextColor3=C.text; setStatus("Recipient set.",false); return true
+end
+setRecBtn.MouseButton1Click:Connect(resolveRecip)
+setRecBtn.TouchTap:Connect(resolveRecip)
+recBox.FocusLost:Connect(function(e) if e then resolveRecip() end end)
+recBox:GetPropertyChangedSignal("Text"):Connect(function()
+    if resolvedId then resolvedId,resolvedName=nil,nil
+        recInfo.Text="Press Set to confirm"; recInfo.TextColor3=C.muted end
+end)
+
+-- Fruit Picker
+local pickWrap = Instance.new("Frame"); pickWrap.BackgroundTransparency=1
+pickWrap.Size=UDim2.new(1,0,0,16+BTN_H); pickWrap.LayoutOrder=3; pickWrap.Parent=sendPanel
+mkLabel(pickWrap, {Text="Select Fruit", Size=UDim2.new(1,0,0,16), TextSize=FS_SM})
+
+local ADD_W = math.floor(WIN_W*0.22)
+local pickBtn = mkBtn(pickWrap, {Size=UDim2.new(1,-(ADD_W+8),0,BTN_H),
+    Position=UDim2.fromOffset(0,16), BackgroundColor3=C.field,
+    Text="Loading...", Font=Enum.Font.Gotham, TextXAlignment=Enum.TextXAlignment.Left,
+    TextSize=FS_SM})
+mkPad(pickBtn,0,8,0,8); pickBtn.AutoButtonColor=false
+local addOneBtn = mkBtn(pickWrap, {Size=UDim2.fromOffset(ADD_W,BTN_H),
+    Position=UDim2.new(1,-ADD_W,0,16), BackgroundColor3=C.green, Text="+ Add", TextSize=FS_MD})
+addOneBtn.TouchTap:Connect(function() addOneBtn.MouseButton1Click:Fire() end)
+
+-- dropdown (parented to root so it floats above panels)
+local scrim = Instance.new("TextButton"); scrim.BackgroundTransparency=1; scrim.Text=""
+scrim.Size=UDim2.fromScale(1,1); scrim.Visible=false; scrim.ZIndex=50
+scrim.AutoButtonColor=false; scrim.Parent=root
+
+local dropF = Instance.new("Frame"); dropF.BackgroundColor3=C.panel
+dropF.BorderSizePixel=0; dropF.Visible=false; dropF.ZIndex=51
+dropF.ClipsDescendants=true; dropF.Parent=root; mkCorner(dropF,8); mkStroke(dropF)
+
+local dropS = Instance.new("ScrollingFrame"); dropS.BackgroundTransparency=1
+dropS.BorderSizePixel=0; dropS.Size=UDim2.fromScale(1,1); dropS.ScrollBarThickness=4
+dropS.AutomaticCanvasSize=Enum.AutomaticSize.Y; dropS.ZIndex=52; dropS.Parent=dropF
+mkPad(dropS,4,4,4,4); Instance.new("UIListLayout",dropS).Padding=UDim.new(0,4)
+
+local function closeDropdown()
+    scrim.Visible=false; dropF.Visible=false
+    for _,c in dropS:GetChildren() do
+        if c:IsA("GuiObject") and not c:IsA("UIListLayout") then c:Destroy() end
+    end
+end
+scrim.MouseButton1Click:Connect(closeDropdown)
+
+local currentFruits={}, selectedFruit=nil
+local function refreshFruits()
+    currentFruits=getFruits()
+    if #currentFruits==0 then pickBtn.Text="No fruits"; selectedFruit=nil; return end
+    if selectedFruit then
+        local found=false
+        for _,f in currentFruits do if f.id==selectedFruit.id then selectedFruit=f; found=true; break end end
+        if not found then selectedFruit=currentFruits[1] end
+    else selectedFruit=currentFruits[1] end
+    pickBtn.Text=selectedFruit.label
+end
+
+pickBtn.MouseButton1Click:Connect(function()
+    refreshFruits()
+    if #currentFruits==0 then setStatus("No fruits in inventory.",true); return end
+    closeDropdown()
+    local bp=pickBtn.AbsolutePosition; local rp=root.AbsolutePosition
+    local dropW=pickBtn.AbsoluteSize.X
+    local menuH=math.min(#currentFruits*(BTN_H+4)+8, math.floor(SH*0.35))
+    dropF.Size=UDim2.fromOffset(dropW, menuH)
+    dropF.Position=UDim2.fromOffset(bp.X-rp.X, bp.Y-rp.Y+pickBtn.AbsoluteSize.Y+4)
+    for _,fruit in currentFruits do
+        local row=mkBtn(dropS,{Size=UDim2.new(1,0,0,BTN_H), BackgroundColor3=C.field,
+            Text=fruit.label, Font=Enum.Font.Gotham, TextSize=FS_SM,
+            TextXAlignment=Enum.TextXAlignment.Left, ZIndex=53})
+        mkPad(row,0,8,0,8)
+        local f=fruit
+        local function pick() selectedFruit=f; pickBtn.Text=f.label; closeDropdown() end
+        row.MouseButton1Click:Connect(pick); row.TouchTap:Connect(pick)
+    end
+    scrim.Visible=true; dropF.Visible=true
+end)
+pickBtn.TouchTap:Connect(function() pickBtn.MouseButton1Click:Fire() end)
+
+-- ════════════════════════════════════════════════════════════
+-- CART
+-- ════════════════════════════════════════════════════════════
+local cart={}
+
+local cartHdr=mkLabel(sendPanel,{Text="Cart  0 / "..MAX_CART,
+    Size=UDim2.new(1,0,0,16), TextColor3=C.text,
+    Font=Enum.Font.GothamBold, TextSize=FS_SM, LayoutOrder=4})
+
+local cartScroll=Instance.new("ScrollingFrame"); cartScroll.BackgroundColor3=C.panel
+cartScroll.BorderSizePixel=0; cartScroll.Size=UDim2.new(1,0,0,CART_H)
+cartScroll.ScrollBarThickness=3; cartScroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
+cartScroll.ClipsDescendants=true; cartScroll.LayoutOrder=5; cartScroll.Parent=sendPanel
+mkCorner(cartScroll,6); mkStroke(cartScroll,C.stroke); mkPad(cartScroll,4,4,4,4)
+Instance.new("UIListLayout",cartScroll).Padding=UDim.new(0,3)
+
+local cartEmpty=mkLabel(cartScroll,{Text="Cart is empty — add fruits above",
+    Size=UDim2.new(1,0,0,26), TextSize=FS_SM, TextColor3=C.muted,
+    TextXAlignment=Enum.TextXAlignment.Center, TextWrapped=true})
+
+local function rebuildCart()
+    for _,c in cartScroll:GetChildren() do if c:IsA("Frame") then c:Destroy() end end
+    local n=#cart
+    cartHdr.Text=("Cart  %d / %d"):format(n,MAX_CART)
+    cartHdr.TextColor3=n>=MAX_CART and C.red or C.text
+    cartEmpty.Visible=n==0
+    for i,entry in ipairs(cart) do
+        local row=Instance.new("Frame"); row.BackgroundColor3=C.field
+        row.Size=UDim2.new(1,0,0,BTN_H-4); row.BorderSizePixel=0; row.Parent=cartScroll; mkCorner(row,5)
+        mkLabel(row,{Text=entry.label, Size=UDim2.new(1,-34,1,0), Position=UDim2.fromOffset(7,0),
+            TextColor3=C.text, TextSize=FS_SM, TextTruncate=Enum.TextTruncate.AtEnd})
+        local xb=mkBtn(row,{Size=UDim2.fromOffset(22,18), Position=UDim2.new(1,-26,0.5,-9),
+            BackgroundColor3=C.red, Text="x", TextSize=FS_SM})
+        local idx=i
+        local function rem()
+            table.remove(cart,idx); rebuildCart(); setStatus("Removed.",false)
+        end
+        xb.MouseButton1Click:Connect(rem); xb.TouchTap:Connect(rem)
+    end
+end
+
+-- add single
+local function doAddOne()
+    refreshFruits()
+    if not selectedFruit then setStatus("No fruit selected.",true); return end
+    if not selectedFruit.id then setStatus("Fruit has no Id.",true); return end
+    if #cart>=MAX_CART then setStatus("Cart full ("..MAX_CART..").",true); return end
+    for _,e in cart do
+        if e.id==selectedFruit.id then setStatus("Already in cart.",true); return end
+    end
+    table.insert(cart,{id=selectedFruit.id, label=selectedFruit.label, itemKey=selectedFruit.itemKey})
+    rebuildCart(); setStatus("Added: "..selectedFruit.label,false)
+end
+addOneBtn.MouseButton1Click:Connect(doAddOne)
+
+-- add all
+local addAllBtn=mkBtn(sendPanel,{Size=UDim2.new(1,0,0,BTN_H),
+    Text="Add All Fruits (up to "..MAX_CART..")",
+    BackgroundColor3=C.panel, TextColor3=C.text, TextSize=FS_SM, LayoutOrder=6})
+mkStroke(addAllBtn,C.stroke)
+local function doAddAll()
+    refreshFruits(); local added=0
+    for _,f in currentFruits do
+        if #cart>=MAX_CART then break end
+        if f.id then
+            local dup=false
+            for _,e in cart do if e.id==f.id then dup=true; break end end
+            if not dup then table.insert(cart,{id=f.id,label=f.label,itemKey=f.itemKey}); added+=1 end
+        end
+    end
+    rebuildCart(); setStatus(added>0 and ("Added %d fruits"):format(added) or "Nothing new.",added==0)
+end
+addAllBtn.MouseButton1Click:Connect(doAddAll); addAllBtn.TouchTap:Connect(doAddAll)
+
+-- clear cart
+local clearCartBtn=mkBtn(sendPanel,{Size=UDim2.new(1,0,0,BTN_H),
+    BackgroundColor3=C.panel, TextColor3=C.muted, Text="Clear Cart", TextSize=FS_SM, LayoutOrder=7})
+mkStroke(clearCartBtn,C.stroke)
+local function doClear() table.clear(cart); rebuildCart(); setStatus("Cart cleared.",false) end
+clearCartBtn.MouseButton1Click:Connect(doClear); clearCartBtn.TouchTap:Connect(doClear)
+
+-- ════════════════════════════════════════════════════════════
+-- SEND BUTTON
+-- ════════════════════════════════════════════════════════════
+local sendBtn=mkBtn(sendPanel,{Size=UDim2.new(1,0,0,math.max(BTN_H+6,36)),
+    Text="Send All (auto-batched)", BackgroundColor3=C.orange,
+    TextSize=FS_LG, LayoutOrder=8})
+
+local sending=false
+local function doSend()
+    if sending then return end
+    if not resolvedId then if not resolveRecip() then return end end
+    if #cart==0 then setStatus("Cart is empty.",true); return end
+    local snapshot={}; for _,e in ipairs(cart) do table.insert(snapshot,e) end
+    local total=#snapshot
+    local chunks={}
+    for i=1,total,SERVER_CHUNK do
+        local chunk={}
+        for j=i,math.min(i+SERVER_CHUNK-1,total) do
+            table.insert(chunk,{Category="HarvestedFruits",ItemKey=snapshot[j].id,Count=1})
+        end
+        table.insert(chunks,chunk)
+    end
+    sending=true; sendBtn.Text="Sending..."; sendBtn.BackgroundColor3=C.aDark; sendBtn.Active=false
+    task.spawn(function()
+        local sent=0; local failed=false
+        for i,chunk in ipairs(chunks) do
+            if i>1 then
+                for cd=BATCH_DELAY,1,-1 do
+                    if not sending then break end
+                    setStatus(("Batch %d/%d — next in %ds"):format(i,#chunks,cd),false)
+                    task.wait(1)
+                end
+            end
+            if not sending then setStatus(("Stopped. Sent %d/%d"):format(sent,total),true); break end
+            setStatus(("Batch %d/%d · %d fruits"):format(i,#chunks,#chunk),false)
+            local ok,success,msg=pcall(function()
+                return Networking.Mailbox.SendBatch:Fire(resolvedId,chunk,"")
+            end)
+            if ok and success then
+                sent=sent+#chunk
+                setStatus(("Batch %d/%d done · %d/%d"):format(i,#chunks,sent,total),false)
+            else
+                local reason=(not ok and "Remote error")
+                    or (type(msg)=="string" and msg~="" and msg) or "Send failed"
+                setStatus(("Batch %d failed: %s  (%d/%d sent)"):format(i,reason,sent,total),true)
+                failed=true; break
+            end
+        end
+        sending=false; sendBtn.Active=true
+        sendBtn.Text="Send All (auto-batched)"; sendBtn.BackgroundColor3=C.orange
+        if sent>0 then
+            local sentLabels={}
+            for i=1,sent do table.insert(sentLabels,snapshot[i].label) end
+            addHistory(resolvedName,resolvedId,sentLabels,sent)
+            sendWebhook(resolvedName,resolvedId,sentLabels,sent)
+            for _=1,sent do table.remove(cart,1) end
+            rebuildCart()
+        end
+        if not failed then
+            setStatus(("Done! Sent %d fruit(s) to @%s"):format(sent,resolvedName or "?"),false)
+        end
+        refreshFruits()
+    end)
+end
+sendBtn.MouseButton1Click:Connect(doSend); sendBtn.TouchTap:Connect(doSend)
+
+-- refresh
+local refBtn=mkBtn(sendPanel,{Size=UDim2.new(1,0,0,BTN_H), Text="Refresh Fruit List",
+    BackgroundColor3=C.panel, TextColor3=C.text, TextSize=FS_SM, LayoutOrder=9})
+mkStroke(refBtn,C.stroke)
+local function doRefresh() refreshFruits(); setStatus("Refreshed — "..#currentFruits.." fruit(s).",false) end
+refBtn.MouseButton1Click:Connect(doRefresh); refBtn.TouchTap:Connect(doRefresh)
+
+-- ════════════════════════════════════════════════════════════
+-- HISTORY PANEL
+-- ════════════════════════════════════════════════════════════
+local histScroll=Instance.new("ScrollingFrame"); histScroll.BackgroundTransparency=1
+histScroll.BorderSizePixel=0; histScroll.Size=UDim2.new(1,0,1,-(BTN_H+10))
+histScroll.ScrollBarThickness=4; histScroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
+histScroll.ScrollBarImageColor3=C.accent; histScroll.LayoutOrder=1; histScroll.Parent=histPanel
+Instance.new("UIListLayout",histScroll).Padding=UDim.new(0,6)
+
+local histEmpty=mkLabel(histScroll,{Text="No mail sent this session.",
+    Size=UDim2.new(1,0,0,30), TextSize=FS_SM, TextColor3=C.muted,
+    TextXAlignment=Enum.TextXAlignment.Center})
+
+local clearHistBtn=mkBtn(histPanel,{Size=UDim2.new(1,0,0,BTN_H), LayoutOrder=2,
+    Text="Clear History", BackgroundColor3=C.panel, TextColor3=C.muted, TextSize=FS_SM})
+mkStroke(clearHistBtn,C.stroke)
+
+local function rebuildHistory()
+    for _,c in histScroll:GetChildren() do if c:IsA("Frame") then c:Destroy() end end
+    histEmpty.Visible=#mailHistory==0
+    for i,entry in ipairs(mailHistory) do
+        local card=Instance.new("Frame"); card.BackgroundColor3=C.histRow
+        card.BorderSizePixel=0; card.Size=UDim2.new(1,0,0,0)
+        card.AutomaticSize=Enum.AutomaticSize.Y; card.LayoutOrder=i; card.Parent=histScroll
+        mkCorner(card,6); mkStroke(card,C.stroke,1); mkPad(card,6,8,6,8)
+        local cl=Instance.new("UIListLayout",card); cl.Padding=UDim.new(0,3)
+        -- header row
+        local hrow=Instance.new("Frame"); hrow.BackgroundTransparency=1
+        hrow.Size=UDim2.new(1,0,0,16); hrow.LayoutOrder=1; hrow.Parent=card
+        mkLabel(hrow,{Text=fmtTime(entry.time), Size=UDim2.new(0.35,0,1,0),
+            TextSize=FS_SM, TextColor3=C.muted, Font=Enum.Font.Gotham})
+        mkLabel(hrow,{Text="-> @"..entry.recipient, Size=UDim2.new(0.45,0,1,0),
+            Position=UDim2.new(0.35,0,0,0), TextSize=FS_SM, TextColor3=C.accent,
+            Font=Enum.Font.GothamBold})
+        mkLabel(hrow,{Text="x"..entry.count, Size=UDim2.new(0.2,0,1,0),
+            Position=UDim2.new(0.8,0,0,0), TextSize=FS_SM, TextColor3=C.green,
+            Font=Enum.Font.GothamBold, TextXAlignment=Enum.TextXAlignment.Right})
+        -- fruit lines
+        local MAX_SHOW=5
+        for j=1,math.min(#entry.fruits,MAX_SHOW) do
+            mkLabel(card,{Text="  "..entry.fruits[j], Size=UDim2.new(1,0,0,14),
+                TextSize=FS_SM, TextColor3=C.text, Font=Enum.Font.Gotham,
+                TextTruncate=Enum.TextTruncate.AtEnd, LayoutOrder=j+1})
+        end
+        if #entry.fruits>MAX_SHOW then
+            mkLabel(card,{Text=("  ... +%d more"):format(#entry.fruits-MAX_SHOW),
+                Size=UDim2.new(1,0,0,14), TextSize=FS_SM, TextColor3=C.muted,
+                Font=Enum.Font.Gotham, LayoutOrder=MAX_SHOW+2})
+        end
+    end
+end
+local function doClearHist() table.clear(mailHistory); rebuildHistory() end
+clearHistBtn.MouseButton1Click:Connect(doClearHist); clearHistBtn.TouchTap:Connect(doClearHist)
+tabHist.MouseButton1Click:Connect(rebuildHistory)
+
+-- ════════════════════════════════════════════════════════════
+-- AUTO-WATCH INVENTORY
+-- ════════════════════════════════════════════════════════════
+task.spawn(function()
+    local function watch(c)
+        if not c then return end
+        c.ChildAdded:Connect(function(child)
+            if child:GetAttribute("Fruit") then task.wait(0.15); refreshFruits() end
+        end)
+        c.ChildRemoved:Connect(function(child)
+            if child:GetAttribute("Fruit") then
+                task.wait(0.15); refreshFruits()
+                local rid=child:GetAttribute("Id")
+                if rid then
+                    for i=#cart,1,-1 do if cart[i].id==rid then table.remove(cart,i) end end
+                    rebuildCart()
+                end
+            end
+        end)
+    end
+    watch(LocalPlayer:FindFirstChild("Backpack"))
+    if LocalPlayer.Character then watch(LocalPlayer.Character) end
+    LocalPlayer.CharacterAdded:Connect(function(char)
+        task.wait(0.5); watch(char)
+        watch(LocalPlayer:FindFirstChild("Backpack")); refreshFruits()
+    end)
+    refreshFruits(); rebuildCart()
+end)
+
+-- ════════════════════════════════════════════════════════════
+-- DRAG (mouse + touch)
+-- ════════════════════════════════════════════════════════════
+do
+    local dragging,dragStart,startPos=false,nil,nil
+    local function onStart(pos) dragging=true; dragStart=pos; startPos=root.Position end
+    local function onMove(pos)
+        if not dragging then return end
+        local d=pos-dragStart
+        local newX=math.clamp(startPos.X.Offset+d.X, 0, SW-root.AbsoluteSize.X)
+        local newY=math.clamp(startPos.Y.Offset+d.Y, 0, SH-root.AbsoluteSize.Y)
+        root.Position=UDim2.fromOffset(newX,newY)
+    end
+    local function onEnd() dragging=false end
+    header.InputBegan:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1
+        or i.UserInputType==Enum.UserInputType.Touch then onStart(i.Position) end
+    end)
+    header.InputEnded:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1
+        or i.UserInputType==Enum.UserInputType.Touch then onEnd() end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseMovement
+        or i.UserInputType==Enum.UserInputType.Touch then onMove(i.Position) end
+    end)
+end
+
+-- ════════════════════════════════════════════════════════════
+-- MINIMIZE / CLOSE / TOGGLE
+-- ════════════════════════════════════════════════════════════
+local minimized=false; local savedSize=root.Size
+local function doMinimize()
+    minimized=not minimized
+    if minimized then
+        savedSize=root.Size; closeDropdown()
+        TweenService:Create(root,TweenInfo.new(0.15),
+            {Size=UDim2.fromOffset(WIN_W, HDR_H+TAB_H)}):Play()
+        sendPanel.Visible=false; histPanel.Visible=false
+    else
+        sendPanel.Visible=true; histPanel.Visible=false
+        TweenService:Create(root,TweenInfo.new(0.15),{Size=savedSize}):Play()
+    end
+end
+minBtn.MouseButton1Click:Connect(doMinimize); minBtn.TouchTap:Connect(doMinimize)
+closeBtn.MouseButton1Click:Connect(function() closeDropdown(); gui:Destroy() end)
+closeBtn.TouchTap:Connect(function() closeDropdown(); gui:Destroy() end)
+
+-- keyboard toggle (PC only)
+UserInputService.InputBegan:Connect(function(input,processed)
+    if processed then return end
+    if input.KeyCode==Enum.KeyCode.RightShift then
+        root.Visible=not root.Visible
+        if not root.Visible then closeDropdown() end
+    end
+end)
+
+-- on-screen toggle button (visible on mobile when UI is hidden)
+local toggleOSBtn=mkBtn(gui,{
+    Size=UDim2.fromOffset(isMobile and 60 or 80, isMobile and 28 or 32),
+    Position=UDim2.new(0,8,0.5,-16),
+    BackgroundColor3=C.panel, TextColor3=C.text,
+    Text="Mail", TextSize=FS_SM, ZIndex=200})
+mkStroke(toggleOSBtn,C.stroke)
+local function doToggle()
+    root.Visible=not root.Visible
+    if not root.Visible then closeDropdown() end
+    toggleOSBtn.Text=root.Visible and "Hide" or "Mail"
+end
+toggleOSBtn.MouseButton1Click:Connect(doToggle)
+toggleOSBtn.TouchTap:Connect(doToggle)
+
+print("[Fruit Mail Sender] Loaded — RightShift or on-screen button to toggle")
