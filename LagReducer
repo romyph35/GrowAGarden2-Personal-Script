@@ -1,14 +1,12 @@
 --[[
-    Plant Performance — Auto Remove
-    Runs automatically on load. No buttons needed.
+    Plant & Sprinkler Performance
+    All buttons are one-click. Each auto-applies to newly spawned instances too.
 
-    Targets inside Gardens > Plot# > Plants > [plant] > Fruits (and descendants):
-      1. Numbered BaseParts (direct children of plant) — growth meshes
-      2. "Swirl" — any instance named Swirl anywhere in descendants
-      3. "Emitter" — LocalScript inside Base inside fruit models
-      4. arcana_orbSource_03_crimson — ParticleEmitters, reduce rate/size
-
-    All also auto-apply to newly spawned plants.
+    Buttons:
+      1. Destroy Plant Meshes     — numbered BaseParts (direct children of plant)
+      2. Remove Swirl + Emitter   — Swirl/Emitter objects inside Fruits descendants
+      3. Reduce Orb Particles     — arcana_orbSource_03_crimson rate/size cut
+      4. Remove Sprinkler Effects — Attachments inside Root of each sprinkler model
 ]]
 
 local Players          = game:GetService("Players")
@@ -18,105 +16,156 @@ local PlayerGui        = LocalPlayer:WaitForChild("PlayerGui")
 local Gardens          = workspace:WaitForChild("Gardens")
 
 -- ════════════════════════════════════════════════════════════
--- CLEANUP FUNCTIONS  (apply to one plant at a time)
+-- CLEANUP FUNCTIONS
 -- ════════════════════════════════════════════════════════════
 
--- 1. Destroy numbered BaseParts that are direct children of the plant model
-local function cleanMeshes(plant)
+-- 1. Destroy numbered BaseParts (direct children of plant model only)
+local meshDone = false
+local function cleanMeshesInPlant(plant)
     for _, part in ipairs(plant:GetChildren()) do
         if part:IsA("BasePart") and tonumber(part.Name) then
             part:Destroy()
         end
     end
 end
+local function destroyAllMeshes()
+    meshDone = true
+    local n = 0
+    for _, plot in Gardens:GetChildren() do
+        local pf = plot:FindFirstChild("Plants")
+        if pf then
+            for _, plant in pf:GetChildren() do
+                cleanMeshesInPlant(plant); n += 1
+            end
+        end
+    end
+    return n
+end
 
--- 2. Destroy Swirl + Emitter anywhere in plant descendants (mainly inside Fruits)
-local function cleanSwirlAndEmitter(plant)
+-- 2. Destroy Swirl + Emitter anywhere in plant descendants (inside Fruits etc.)
+local swirlDone = false
+local function cleanSwirlInPlant(plant)
     for _, desc in ipairs(plant:GetDescendants()) do
         if desc.Name == "Swirl" or desc.Name == "Emitter" then
             pcall(function() desc:Destroy() end)
         end
     end
 end
-
--- 3. Reduce arcana_orbSource_03_crimson ParticleEmitters in Fruits
-local function cleanOrbs(plant)
-    for _, desc in ipairs(plant:GetDescendants()) do
-        if desc:IsA("ParticleEmitter")
-            and desc.Name == "arcana_orbSource_03_crimson" then
-            pcall(function()
-                desc.Rate     = math.min(desc.Rate, 2)
-                desc.Lifetime = NumberRange.new(0.3, 0.6)
-                desc.Speed    = NumberRange.new(0.5, 1)
-                desc.RotSpeed = NumberRange.new(0, 0)
-                local kps = desc.Size.Keypoints
-                local newKps = {}
-                for _, kp in ipairs(kps) do
-                    table.insert(newKps, NumberSequenceKeypoint.new(
-                        kp.Time, kp.Value * 0.4, kp.Envelope * 0.4))
-                end
-                desc.Size = NumberSequence.new(newKps)
-            end)
-        end
-    end
-end
-
--- Apply all cleanups to one plant
-local function cleanPlant(plant)
-    cleanMeshes(plant)
-    cleanSwirlAndEmitter(plant)
-    cleanOrbs(plant)
-end
-
--- Apply all cleanups to every plant in every plot
-local function cleanAll()
-    local total = 0
+local function destroyAllSwirl()
+    swirlDone = true
+    local n = 0
     for _, plot in Gardens:GetChildren() do
         local pf = plot:FindFirstChild("Plants")
         if pf then
             for _, plant in pf:GetChildren() do
-                cleanPlant(plant)
-                total += 1
+                for _, desc in ipairs(plant:GetDescendants()) do
+                    if desc.Name == "Swirl" or desc.Name == "Emitter" then
+                        pcall(function() desc:Destroy() end)
+                        n += 1
+                    end
+                end
             end
         end
     end
-    return total
+    return n
 end
 
--- ════════════════════════════════════════════════════════════
--- AUTO-WATCH — applies to any plant that spawns later
--- ════════════════════════════════════════════════════════════
-local function watchPlot(plot)
-    local pf = plot:FindFirstChild("Plants")
-    if not pf then
-        -- wait up to 10s for the Plants folder to appear
-        pf = plot:WaitForChild("Plants", 10)
-        if not pf then return end
+-- 3. Destroy arcana_orbSource_03_crimson ParticleEmitters entirely
+local orbDone = false
+local function cleanOrbInPlant(plant)
+    for _, desc in ipairs(plant:GetDescendants()) do
+        if desc:IsA("ParticleEmitter")
+            and desc.Name == "arcana_orbSource_03_crimson" then
+            pcall(function() desc:Destroy() end)
+        end
     end
-    -- existing plants
-    for _, plant in pf:GetChildren() do
-        cleanPlant(plant)
-    end
-    -- future plants
-    pf.ChildAdded:Connect(function(plant)
-        task.wait(0.5) -- let plant fully initialize first
-        cleanPlant(plant)
-    end)
 end
-
-task.spawn(function()
-    -- existing plots
+local function destroyAllOrbs()
+    orbDone = true
+    local n = 0
     for _, plot in Gardens:GetChildren() do
-        watchPlot(plot)
+        local pf = plot:FindFirstChild("Plants")
+        if pf then
+            for _, plant in pf:GetChildren() do
+                for _, desc in ipairs(plant:GetDescendants()) do
+                    if desc:IsA("ParticleEmitter")
+                        and desc.Name == "arcana_orbSource_03_crimson" then
+                        pcall(function() desc:Destroy() end)
+                        n += 1
+                    end
+                end
+            end
+        end
     end
-    -- future plots
-    Gardens.ChildAdded:Connect(function(plot)
-        watchPlot(plot)
-    end)
+    return n
+end
+
+-- 4. Remove Attachments inside Root of each sprinkler model
+--    Structure: Plot# > Sprinklers > [sprinkler] > Root > Attachment
+local attachDone = false
+local function cleanAttachInSprinkler(sprinkler)
+    local root = sprinkler:FindFirstChild("Root")
+    if root then
+        for _, child in ipairs(root:GetChildren()) do
+            if child:IsA("Attachment") then
+                child:Destroy()
+            end
+        end
+    end
+end
+local function removeAllSprinklerAttachments()
+    attachDone = true
+    local n = 0
+    for _, plot in Gardens:GetChildren() do
+        local sf = plot:FindFirstChild("Sprinklers")
+        if sf then
+            for _, sprinkler in sf:GetChildren() do
+                local root = sprinkler:FindFirstChild("Root")
+                if root then
+                    for _, child in ipairs(root:GetChildren()) do
+                        if child:IsA("Attachment") then
+                            child:Destroy(); n += 1
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return n
+end
+
+-- ════════════════════════════════════════════════════════════
+-- AUTO-APPLY to newly spawned plants & sprinklers
+-- ════════════════════════════════════════════════════════════
+task.spawn(function()
+    local function watchPlot(plot)
+        -- Plants
+        local pf = plot:FindFirstChild("Plants")
+        if not pf then pf = plot:WaitForChild("Plants", 10) end
+        if pf then
+            pf.ChildAdded:Connect(function(plant)
+                task.wait(0.5)
+                if meshDone  then cleanMeshesInPlant(plant) end
+                if swirlDone then cleanSwirlInPlant(plant) end
+                if orbDone   then cleanOrbInPlant(plant) end
+            end)
+        end
+        -- Sprinklers
+        local sf = plot:FindFirstChild("Sprinklers")
+        if not sf then sf = plot:WaitForChild("Sprinklers", 10) end
+        if sf then
+            sf.ChildAdded:Connect(function(sprinkler)
+                task.wait(0.5)
+                if attachDone then cleanAttachInSprinkler(sprinkler) end
+            end)
+        end
+    end
+    for _, plot in Gardens:GetChildren() do watchPlot(plot) end
+    Gardens.ChildAdded:Connect(watchPlot)
 end)
 
 -- ════════════════════════════════════════════════════════════
--- UI  — small status window (draggable, closeable)
+-- UI
 -- ════════════════════════════════════════════════════════════
 local isMobile = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
 
@@ -134,106 +183,151 @@ local C = {
     stroke = Color3.fromRGB(55,58,75),
     text   = Color3.fromRGB(235,238,245),
     muted  = Color3.fromRGB(140,148,165),
+    purple = Color3.fromRGB(130,55,170),
+    pHov   = Color3.fromRGB(155,75,200),
+    blue   = Color3.fromRGB(50,120,230),
+    bHov   = Color3.fromRGB(70,140,255),
+    orange = Color3.fromRGB(210,120,35),
+    oHov   = Color3.fromRGB(235,145,55),
+    teal   = Color3.fromRGB(30,170,140),
+    tHov   = Color3.fromRGB(45,200,165),
     green  = Color3.fromRGB(72,199,116),
     red    = Color3.fromRGB(220,70,70),
 }
 
-local W = isMobile and 230 or 260
+local FS  = isMobile and 11 or 13
+local BH  = isMobile and 30 or 34
+local W   = isMobile and 250 or 280
+-- window height: 36 title + 10 pad + 20 desc + (BH+8)*4 + 12 bottom
+local WH  = 36 + 10 + 22 + (BH + 8) * 4 + 10
+
 local win = Instance.new("Frame")
-win.Name = "Window"; win.AnchorPoint = Vector2.new(0.5, 0.5)
-win.Position = UDim2.fromScale(0.5, 0.5)  -- centered on screen
-win.Size = UDim2.fromOffset(W, 80)
+win.Name = "Window"
+win.AnchorPoint = Vector2.new(0.5, 0.5)
+win.Position = UDim2.fromScale(0.5, 0.5)
+win.Size = UDim2.fromOffset(W, WH)
 win.BackgroundColor3 = C.bg; win.BorderSizePixel = 0
 win.ClipsDescendants = true; win.Parent = gui
-do local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,8); c.Parent=win end
+do local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,10); c.Parent=win end
 do local s=Instance.new("UIStroke"); s.Color=C.stroke; s.Thickness=1; s.Parent=win end
 
 -- Title bar
 local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1,0,0,30)
+titleBar.Size = UDim2.new(1,0,0,36)
 titleBar.BackgroundColor3 = C.panel; titleBar.BorderSizePixel = 0; titleBar.Parent = win
 
 local titleLbl = Instance.new("TextLabel")
-titleLbl.BackgroundTransparency = 1; titleLbl.Size = UDim2.new(1,-32,1,0)
-titleLbl.Position = UDim2.fromOffset(8,0); titleLbl.Font = Enum.Font.GothamBold
-titleLbl.TextSize = isMobile and 11 or 12; titleLbl.TextColor3 = C.text
+titleLbl.BackgroundTransparency = 1; titleLbl.Size = UDim2.new(1,-36,1,0)
+titleLbl.Position = UDim2.fromOffset(10,0); titleLbl.Font = Enum.Font.GothamBold
+titleLbl.TextSize = FS; titleLbl.TextColor3 = C.text
 titleLbl.TextXAlignment = Enum.TextXAlignment.Left
 titleLbl.Text = "⚡ Plant Performance"; titleLbl.Parent = titleBar
 
+local sep = Instance.new("Frame")
+sep.Size=UDim2.new(1,0,0,1); sep.Position=UDim2.new(0,0,1,-1)
+sep.BackgroundColor3=C.stroke; sep.BorderSizePixel=0; sep.Parent=titleBar
+
+-- Close button (touch-safe: only closes if finger didn't drag)
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.fromOffset(22,22); closeBtn.Position = UDim2.new(1,-26,0,4)
+closeBtn.Size = UDim2.fromOffset(24,24); closeBtn.Position = UDim2.new(1,-30,0,6)
 closeBtn.BackgroundColor3 = C.red; closeBtn.Text = "x"
 closeBtn.TextColor3 = C.text; closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 11; closeBtn.BorderSizePixel = 0; closeBtn.Parent = titleBar
-do local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,4); c.Parent=closeBtn end
+closeBtn.TextSize = 12; closeBtn.BorderSizePixel = 0; closeBtn.Parent = titleBar
+do local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,5); c.Parent=closeBtn end
 closeBtn.MouseButton1Click:Connect(function() gui:Destroy() end)
--- Touch: only close if finger didn't move (not a drag)
 do
-    local touchStartPos = nil
+    local ts = nil
     closeBtn.InputBegan:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.Touch then
-            touchStartPos = i.Position
-        end
+        if i.UserInputType == Enum.UserInputType.Touch then ts = i.Position end
     end)
     closeBtn.InputEnded:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.Touch and touchStartPos then
-            local dist = (i.Position - touchStartPos).Magnitude
-            if dist < 10 then  -- only close if tap, not drag
-                gui:Destroy()
-            end
-            touchStartPos = nil
+        if i.UserInputType == Enum.UserInputType.Touch and ts then
+            if (i.Position - ts).Magnitude < 12 then gui:Destroy() end
+            ts = nil
         end
     end)
 end
 
--- Status lines
-local function mkInfo(text, color, yPos)
-    local l = Instance.new("TextLabel")
-    l.BackgroundTransparency = 1; l.Size = UDim2.new(1,-16,0,16)
-    l.Position = UDim2.fromOffset(8, yPos)
-    l.Font = Enum.Font.Gotham; l.TextSize = isMobile and 9 or 10
-    l.TextColor3 = color or C.muted; l.TextXAlignment = Enum.TextXAlignment.Left
-    l.TextTruncate = Enum.TextTruncate.AtEnd
-    l.Text = text; l.Parent = win; return l
+-- Body
+local body = Instance.new("Frame")
+body.BackgroundTransparency = 1; body.Position = UDim2.fromOffset(0,36)
+body.Size = UDim2.new(1,0,1,-36); body.Parent = win
+local ll = Instance.new("UIListLayout", body)
+ll.Padding = UDim.new(0,8); ll.SortOrder = Enum.SortOrder.LayoutOrder
+ll.HorizontalAlignment = Enum.HorizontalAlignment.Center
+do local p=Instance.new("UIPadding",body)
+    p.PaddingTop=UDim.new(0,10); p.PaddingLeft=UDim.new(0,12); p.PaddingRight=UDim.new(0,12)
 end
 
-local line1 = mkInfo("Running cleanup...", C.muted, 34)
-local line2 = mkInfo("Auto-applies to new plants.", C.muted, 50)
-local line3 = mkInfo("Drag title to move  |  x to close", C.muted, 66)
+-- Description
+local desc = Instance.new("TextLabel")
+desc.LayoutOrder = 1; desc.BackgroundTransparency = 1
+desc.Size = UDim2.new(1,0,0,18); desc.Font = Enum.Font.Gotham
+desc.TextSize = isMobile and 9 or 10; desc.TextColor3 = C.muted
+desc.TextWrapped = true; desc.Text = "One-click. Auto-applies to new plants/sprinklers."
+desc.Parent = body
 
--- Run cleanup and update status
-task.spawn(function()
-    task.wait(0.1)  -- let watcher start first
-    local count = cleanAll()
-    line1.Text = ("✅ Cleaned %d plants on load"):format(count)
-    line1.TextColor3 = C.green
-    line2.Text = "Swirl, Emitter, Meshes, Orbs reduced."
-    line2.TextColor3 = C.green
-end)
+-- Button helper
+local function mkBtn(order, label, col, hov, action)
+    local btn = Instance.new("TextButton")
+    btn.LayoutOrder = order; btn.Size = UDim2.new(1,0,0,BH)
+    btn.BackgroundColor3 = col; btn.Text = label
+    btn.TextColor3 = C.text; btn.Font = Enum.Font.GothamBold
+    btn.TextSize = FS; btn.BorderSizePixel = 0; btn.Parent = body
+    do local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,7); c.Parent=btn end
+    btn.MouseEnter:Connect(function()
+        if btn.Active ~= false then btn.BackgroundColor3 = hov end
+    end)
+    btn.MouseLeave:Connect(function()
+        if btn.Active ~= false then btn.BackgroundColor3 = col end
+    end)
+    local function fire()
+        btn.Text = "Working..."; btn.BackgroundColor3 = C.muted
+        btn.Active = false; btn.AutoButtonColor = false
+        task.spawn(function()
+            local n = action()
+            btn.Text = ("✅ Done (%d)"):format(n)
+            btn.BackgroundColor3 = C.green
+        end)
+    end
+    btn.MouseButton1Click:Connect(fire)
+    -- touch-safe: only fire if finger didn't move
+    do
+        local ts = nil
+        btn.InputBegan:Connect(function(i)
+            if i.UserInputType==Enum.UserInputType.Touch then ts=i.Position end
+        end)
+        btn.InputEnded:Connect(function(i)
+            if i.UserInputType==Enum.UserInputType.Touch and ts then
+                if (i.Position-ts).Magnitude < 15 and btn.Active ~= false then fire() end
+                ts = nil
+            end
+        end)
+    end
+    return btn
+end
+
+mkBtn(2, "⚡ Destroy Plant Meshes",         C.purple, C.pHov,  destroyAllMeshes)
+mkBtn(3, "🌀 Remove Swirl + Emitter",        C.blue,   C.bHov,  destroyAllSwirl)
+mkBtn(4, "✨ Destroy Orb Particles",          C.orange, C.oHov,  destroyAllOrbs)
+mkBtn(5, "💧 Remove Sprinkler Attachments",  C.teal,   C.tHov,  removeAllSprinklerAttachments)
 
 -- ════════════════════════════════════════════════════════════
--- DRAG  — converts to pure offset on first drag so position is stable
+-- DRAG (converts to offset on first drag — stable on all devices)
 -- ════════════════════════════════════════════════════════════
 do
-    local dragging, dragStart, startPos = false, nil, nil
+    local dragging, dragStart, startXY = false, nil, nil
     local cam = workspace.CurrentCamera
-
-    local function startDrag(pos)
-        -- snapshot absolute pixel position (works regardless of AnchorPoint)
-        dragging = true
-        dragStart = Vector2.new(pos.X, pos.Y)
-        local ap = win.AbsolutePosition
-        local as = win.AbsoluteSize
-        -- convert to top-left offset (AnchorPoint 0,0) for clean math
-        startPos = Vector2.new(ap.X, ap.Y)
-        win.AnchorPoint = Vector2.new(0, 0)
-        win.Position = UDim2.fromOffset(ap.X, ap.Y)
-    end
 
     titleBar.InputBegan:Connect(function(i)
         if i.UserInputType==Enum.UserInputType.MouseButton1
         or i.UserInputType==Enum.UserInputType.Touch then
-            startDrag(i.Position)
+            dragging = true
+            dragStart = Vector2.new(i.Position.X, i.Position.Y)
+            local ap = win.AbsolutePosition
+            startXY = Vector2.new(ap.X, ap.Y)
+            win.AnchorPoint = Vector2.new(0,0)
+            win.Position = UDim2.fromOffset(ap.X, ap.Y)
         end
     end)
     titleBar.InputEnded:Connect(function(i)
@@ -247,9 +341,9 @@ do
         local d = Vector2.new(i.Position.X, i.Position.Y) - dragStart
         local sv = cam.ViewportSize; local ws = win.AbsoluteSize
         win.Position = UDim2.fromOffset(
-            math.clamp(startPos.X + d.X, 0, sv.X - ws.X),
-            math.clamp(startPos.Y + d.Y, 0, sv.Y - ws.Y))
+            math.clamp(startXY.X+d.X, 0, sv.X-ws.X),
+            math.clamp(startXY.Y+d.Y, 0, sv.Y-ws.Y))
     end)
 end
 
-print("[PlantPerformance] Auto-running — meshes, swirl, emitter, orbs cleaned")
+print("[PlantPerformance] Ready — 4 one-click buttons")
