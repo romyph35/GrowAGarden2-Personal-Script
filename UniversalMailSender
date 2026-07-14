@@ -1,0 +1,2182 @@
+--[[
+    UniversalMailSender.lua
+    ═══════════════════════════════════════════════════════════════
+    Tabs:
+      [Mail]   – Catalog items (Seeds, WateringCans, Sprinklers,
+                 Mushrooms, Gnomes, Raccoons, Crates, SeedPacks,
+                 Trowels, Props, EmptyPots, Eggs, Pets)  max 9999
+               – Plants in Pot  (PottedPlant attribute)
+      [Fruits] – HarvestedFruits + FruitPot items
+                 (Fruit attribute OR PottedPlant+HasFruits)
+                 100 cart · 20/batch · 9s delay · History
+    ═══════════════════════════════════════════════════════════════
+    Toggle: RightShift  or  on-screen "Mail" button
+--]]
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService  = game:GetService("UserInputService")
+local TweenService      = game:GetService("TweenService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+local Networking  = require(ReplicatedStorage
+    :WaitForChild("SharedModules"):WaitForChild("Networking"))
+
+-- ── PlayerStateClient for inventory
+local ok_psc, PlayerStateClient = pcall(function()
+    return require(ReplicatedStorage:WaitForChild("ClientModules")
+        :WaitForChild("PlayerStateClient"))
+end)
+if not ok_psc then PlayerStateClient = nil end
+
+-- ── MailboxItemCatalog (for category list + Resolve)
+local ok_mic, MailboxItemCatalog = pcall(function()
+    return require(LocalPlayer.PlayerScripts.Controllers.MailboxController.MailboxItemCatalog)
+end)
+if not ok_mic then MailboxItemCatalog = nil end
+
+-- ════════════════════════════════════════
+-- FRUIT VALUE CALC (same as FruitMailSender)
+-- ════════════════════════════════════════
+local SellValueData = {
+    Carrot=5, Strawberry=3, Tomato=9, Blueberry=5, Apple=12,
+    Bamboo=800, Cactus=40, Pineapple=30, ["Green Bean"]=10, Banana=35,
+    Grape=45, Mushroom=13000, ["Rocket Pop"]=22500, Coconut=60, Mango=90,
+    ["Dragon Fruit"]=150, Acorn=200, Cherry=350, ["Fire Fern"]=900,
+    Sunflower=1750, ["Venus Fly Trap"]=3000, Pomegranate=900,
+    ["Poison Apple"]=900, ["Moon Bloom"]=9000, ["Dragon's Breath"]=3400,
+    ["Hypno Bloom"]=9500, ["Poison Ivy"]=1700, ["Glow Mushroom"]=700,
+    ["Ghost Pepper"]=2500, ["Horned Melon"]=200, Corn=34,
+    ["Baby Cactus"]=70, Tulip=60, ["Venom Spitter"]=3800, ["Briar Rose"]=6500,
+    ["Eclipse Bloom"]=15000, ["Ember Lily"]=8000, ["Crystal Lotus"]=12000,
+}
+local MutationMult = {
+    Aurora=1.5, Bloodlit=60, Chained=8, Electric=25, Starstruck=50,
+    Rainbow=30, Gold=10, Frozen=14, Ignited=20, Bloodmoon=50, Eclipse=80,
+}
+local SIZE_EXP = 2.65
+local DR_KNEE  = 5
+local DR_TAIL  = 1.5
+
+local function calcFruitValue(fruitName, sizeMult, mutation, decay)
+    local base = SellValueData[fruitName]
+    if not base or base <= 0 then return nil end
+    local w = tonumber(sizeMult) or 0
+    if w <= 0 then return nil end
+    local sizeComp = w ^ SIZE_EXP
+    if w > DR_KNEE then
+        sizeComp = DR_KNEE^SIZE_EXP * (w/DR_KNEE)^math.min(DR_TAIL, SIZE_EXP)
+    end
+    local mutMult   = (mutation and mutation ~= "" and mutation ~= "Normal")
+                      and (MutationMult[mutation] or 1) or 1
+    local decayMult = (type(decay)=="number" and decay>0)
+                      and (1-math.clamp(decay,0,1)*0.8) or 1
+    return math.floor(base * sizeComp * mutMult * decayMult)
+end
+
+local function fmtVal(v)
+    if not v or v<=0 then return "" end
+    if     v>=1e12 then return ("$%.2fT"):format(v/1e12)
+    elseif v>=1e9  then return ("$%.2fB"):format(v/1e9)
+    elseif v>=1e6  then return ("$%.2fM"):format(v/1e6)
+    elseif v>=1e3  then return ("$%.1fK"):format(v/1e3)
+    else                return "$"..tostring(v) end
+end
+
+local function fmtTime(t) return os.date("%H:%M:%S", t) end
+
+-- ════════════════════════════════════════
+-- CONFIG
+-- ════════════════════════════════════════
+local WEBHOOK_URL  = ""
+local MAX_FRUIT_CART = 100
+local SERVER_CHUNK   = 20
+local BATCH_DELAY    = 10
+local MAX_CATALOG    = 9999
+
+local httpReq = (syn and syn.request) or (http and http.request)
+    or (http_request) or (request) or nil
+
+-- ════════════════════════════════════════
+-- DEVICE / SIZING
+-- ════════════════════════════════════════
+local isMobile = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+local cam      = workspace.CurrentCamera
+local SW       = cam.ViewportSize.X
+local SH       = cam.ViewportSize.Y
+
+local PANEL_W = isMobile and math.min(SW-16, 310) or 340
+local PANEL_H = isMobile and math.min(SH-90, 500)  or 580
+local GAP     = 8
+local WIN_W   = isMobile and PANEL_W or (PANEL_W*2+GAP)
+local WIN_H   = PANEL_H
+
+local FS_LG = isMobile and 13 or 16
+local FS_MD = isMobile and 11 or 13
+local FS_SM = isMobile and 10 or 11
+
+local HDR_H = isMobile and 44 or 50
+local TAB_H = isMobile and 30 or 36
+local ROW_H = isMobile and 24 or 30
+local BTN_H = isMobile and 28 or 32
+local PAD   = isMobile and 6  or 10
+
+-- ════════════════════════════════════════
+-- THEME
+-- ════════════════════════════════════════
+local C = {
+    bg      = Color3.fromRGB(12, 15, 24),
+    panel   = Color3.fromRGB(20, 24, 36),
+    field   = Color3.fromRGB(30, 35, 50),
+    stroke  = Color3.fromRGB(42, 52, 72),
+    accent  = Color3.fromRGB(58, 130, 246),
+    aDark   = Color3.fromRGB(35, 90, 190),
+    green   = Color3.fromRGB(72, 199, 116),
+    orange  = Color3.fromRGB(251, 146, 60),
+    red     = Color3.fromRGB(220, 70, 70),
+    yellow  = Color3.fromRGB(255, 210, 50),
+    purple  = Color3.fromRGB(168, 85, 247),
+    text    = Color3.fromRGB(235, 238, 248),
+    muted   = Color3.fromRGB(130, 142, 168),
+    histRow = Color3.fromRGB(25, 30, 45),
+    tabAct  = Color3.fromRGB(30, 60, 110),
+}
+
+-- ════════════════════════════════════════
+-- TOUCH-SAFE BUTTON
+-- ════════════════════════════════════════
+local TOUCH_MAX_DIST = 15
+local function connectButton(btn, cb)
+    local sp = nil
+    btn.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1
+        or inp.UserInputType == Enum.UserInputType.Touch then
+            sp = Vector2.new(inp.Position.X, inp.Position.Y)
+        end
+    end)
+    btn.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1
+        or inp.UserInputType == Enum.UserInputType.Touch then
+            if sp then
+                local d = (Vector2.new(inp.Position.X, inp.Position.Y)-sp).Magnitude
+                sp = nil
+                if d <= TOUCH_MAX_DIST then task.spawn(cb) end
+            end
+        end
+    end)
+end
+
+-- ════════════════════════════════════════
+-- UI HELPERS
+-- ════════════════════════════════════════
+local function mkCorner(p, r)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r or 6); c.Parent = p; return c
+end
+local function mkStroke(p, col, t)
+    local s = Instance.new("UIStroke")
+    s.Color = col or C.stroke; s.Thickness = t or 1
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = p; return s
+end
+local function mkPad(p, t, r, b, l)
+    local v = Instance.new("UIPadding")
+    v.PaddingTop    = UDim.new(0, t or PAD)
+    v.PaddingRight  = UDim.new(0, r or PAD)
+    v.PaddingBottom = UDim.new(0, b or PAD)
+    v.PaddingLeft   = UDim.new(0, l or PAD)
+    v.Parent = p; return v
+end
+local function mkLabel(parent, props)
+    local l = Instance.new("TextLabel")
+    l.BackgroundTransparency = 1
+    l.Font       = Enum.Font.GothamMedium
+    l.TextSize   = FS_MD
+    l.TextColor3 = C.muted
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    for k,v in props do l[k]=v end
+    l.Parent = parent; return l
+end
+local function mkBox(parent, props)
+    local t = Instance.new("TextBox")
+    t.BackgroundColor3   = C.field
+    t.TextColor3         = C.text
+    t.PlaceholderColor3  = C.muted
+    t.Font               = Enum.Font.Gotham
+    t.TextSize           = FS_MD
+    t.ClearTextOnFocus   = false
+    t.Text               = ""
+    for k,v in props do t[k]=v end
+    mkCorner(t,6); mkStroke(t)
+    t.Parent = parent; return t
+end
+local function mkBtn(parent, props)
+    local b = Instance.new("TextButton")
+    b.AutoButtonColor  = false
+    b.BackgroundColor3 = C.accent
+    b.TextColor3       = Color3.new(1,1,1)
+    b.Font             = Enum.Font.GothamBold
+    b.TextSize         = FS_MD
+    b.Text             = "Button"
+    for k,v in props do b[k]=v end
+    mkCorner(b,6); b.Parent = parent; return b
+end
+local function mkScroll(parent, props)
+    local s = Instance.new("ScrollingFrame")
+    s.BackgroundTransparency = 1
+    s.BorderSizePixel        = 0
+    s.ScrollBarThickness     = isMobile and 3 or 4
+    s.ScrollBarImageColor3   = C.accent
+    s.AutomaticCanvasSize    = Enum.AutomaticSize.Y
+    s.CanvasSize             = UDim2.new(0,0,0,0)
+    s.ScrollingDirection     = Enum.ScrollingDirection.Y
+    s.ClipsDescendants       = true
+    for k,v in props do s[k]=v end
+    s.Parent = parent; return s
+end
+local function mkList(parent, gap)
+    local l = Instance.new("UIListLayout", parent)
+    l.Padding   = UDim.new(0, gap or 6)
+    l.SortOrder = Enum.SortOrder.LayoutOrder
+    return l
+end
+
+-- ════════════════════════════════════════
+-- HEADSHOT HELPER
+-- ════════════════════════════════════════
+local function getHeadshot(uid)
+    local ok, url = pcall(function()
+        return Players:GetUserThumbnailAsync(uid,
+            Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+    end)
+    return (ok and url) or ""
+end
+
+-- ════════════════════════════════════════
+-- INVENTORY SCANNER
+-- Returns catalog items from replica Data
+-- ════════════════════════════════════════
+-- Categories we show in the Mail tab (non-fruit)
+local MAIL_CATEGORIES = {
+    "Seeds","WateringCans","Sprinklers","Mushrooms","Gnomes",
+    "Raccoons","Crates","GuildCrates","SeedPacks","Eggs",
+    "Trowels","Props","EmptyPots","Pets","PowerHoses",
+}
+
+local function getCatalogItems()
+    local list = {}
+    if not PlayerStateClient then return list end
+    local replica = PlayerStateClient:GetLocalReplica()
+    if not replica then return list end
+    local inv = replica.Data and replica.Data.Inventory
+    if type(inv) ~= "table" then return list end
+
+    for _, cat in MAIL_CATEGORIES do
+        local catData = inv[cat]
+        if type(catData) == "table" then
+            for itemKey, value in catData do
+                local qty = 0
+                if type(value) == "number" then
+                    qty = value
+                elseif type(value) == "table" then
+                    -- pets / fruits stored as individual entries
+                    qty = 1
+                end
+                if qty > 0 then
+                    local displayName, image = itemKey, ""
+                    if MailboxItemCatalog then
+                        local ok2, dn, img = pcall(MailboxItemCatalog.Resolve,
+                            MailboxItemCatalog, cat, itemKey, value)
+                        if ok2 and dn then displayName = dn end
+                        if ok2 and img then image = img end
+                    end
+                    table.insert(list, {
+                        category    = cat,
+                        itemKey     = itemKey,
+                        displayName = displayName,
+                        image       = image,
+                        qty         = qty,
+                        entryValue  = value,
+                    })
+                end
+            end
+        end
+    end
+    table.sort(list, function(a,b)
+        if a.category ~= b.category then return a.category < b.category end
+        return a.displayName:lower() < b.displayName:lower()
+    end)
+    return list
+end
+
+-- ════════════════════════════════════════
+-- POTTED PLANT SCANNER  (PlantInPot for Mail tab)
+-- Attributes: PottedPlant=true, PlantName, Id, SizeMultiplier, FruitName, Variant
+-- ════════════════════════════════════════
+local function getPottedPlants()
+    local list, seen = {}, {}
+    local function scan(c)
+        if not c then return end
+        for _, item in c:GetChildren() do
+            if item:GetAttribute("PottedPlant") == true and not seen[item] then
+                seen[item] = true
+                local plantName = item:GetAttribute("PlantName") or item.Name
+                local fruitName = item:GetAttribute("FruitName") or ""
+                local variant   = item:GetAttribute("Variant") or "Normal"
+                local sizeMult  = item:GetAttribute("SizeMultiplier") or 1
+                local id        = item:GetAttribute("Id")
+                local hasFruits = item:GetAttribute("HasFruits")
+                local lbl = plantName
+                if variant and variant ~= "" and variant ~= "Normal" then
+                    lbl = variant.." "..lbl
+                end
+                table.insert(list, {
+                    id          = id,
+                    label       = lbl,
+                    plantName   = plantName,
+                    fruitName   = fruitName,
+                    variant     = variant,
+                    sizeMult    = sizeMult,
+                    hasFruits   = hasFruits,
+                    isPottedPlant = true,
+                })
+            end
+        end
+    end
+    scan(LocalPlayer.Character)
+    scan(LocalPlayer:FindFirstChild("Backpack"))
+    table.sort(list, function(a,b) return a.label:lower() < b.label:lower() end)
+    return list
+end
+
+-- ════════════════════════════════════════
+-- FRUIT SCANNER  (harvested + fruit-pot)
+-- ════════════════════════════════════════
+local function getFruits()
+    local list, seen = {}, {}
+    local function scan(c)
+        if not c then return end
+        for _, item in c:GetChildren() do
+            if seen[item] then continue end
+            local fn = item:GetAttribute("Fruit")
+            -- Also pick up FruitPot items (PottedPlant + HasFruits)
+            local isPot = item:GetAttribute("PottedPlant") == true
+                       and item:GetAttribute("HasFruits") == true
+            if fn or isPot then
+                seen[item] = true
+                local fruitName = fn or item:GetAttribute("FruitName") or item.Name
+                local mut       = item:GetAttribute("Mutation")
+                            or item:GetAttribute("Variant") or ""
+                local wt        = item:GetAttribute("Weight")
+                local id        = item:GetAttribute("Id")
+                local sizeMult  = item:GetAttribute("SizeMultiplier") or 1
+                local decay     = item:GetAttribute("DecayAlpha") or 0
+                if mut == "Normal" then mut = "" end
+                local lbl = fruitName
+                if mut and mut ~= "" then lbl = mut.." "..fruitName end
+                if wt then lbl = lbl..string.format(" (%.1fg)", wt) end
+                if isPot then lbl = "🪴 "..lbl end
+                table.insert(list, {
+                    id       = id,
+                    label    = lbl,
+                    itemKey  = fruitName,
+                    mutation = mut,
+                    weight   = wt,
+                    sizeMult = sizeMult,
+                    decay    = decay,
+                    isPot    = isPot,
+                })
+            end
+        end
+    end
+    scan(LocalPlayer.Character)
+    scan(LocalPlayer:FindFirstChild("Backpack"))
+    table.sort(list, function(a,b) return a.label:lower() < b.label:lower() end)
+    return list
+end
+
+-- ════════════════════════════════════════
+-- HISTORY  (shared for both tabs)
+-- ════════════════════════════════════════
+local MAX_HIST   = 60
+local mailHistory = {}
+local function addHistory(rName, rId, items, count, tabName)
+    table.insert(mailHistory, 1, {
+        time      = os.time(),
+        recipient = rName or "?",
+        recipId   = rId,
+        count     = count,
+        items     = items,
+        tab       = tabName or "Mail",
+    })
+    if #mailHistory > MAX_HIST then table.remove(mailHistory) end
+end
+
+-- ════════════════════════════════════════
+-- DISCORD WEBHOOK
+-- ════════════════════════════════════════
+local function sendWebhook(rName, rId, labels, count, tabName)
+    if WEBHOOK_URL == "" or not httpReq then return end
+    task.spawn(function()
+        local lines = {}
+        for i, lbl in ipairs(labels) do
+            if i > 25 then table.insert(lines, ("...+%d more"):format(#labels-25)); break end
+            table.insert(lines, lbl)
+        end
+        local function esc(s)
+            return tostring(s):gsub('"','\\"'):gsub("\n","\\n")
+        end
+        local body = ('{"username":"Universal Mail Sender","embeds":[{'..
+            '"title":"Mail Sent · %s","color":3832063,"fields":['..
+            '{"name":"Sender","value":"%s","inline":true},'..
+            '{"name":"Recipient","value":"@%s (ID: %s)","inline":true},'..
+            '{"name":"Sent","value":"**%d item(s)**","inline":true},'..
+            '{"name":"Items","value":"```\\n%s\\n```","inline":false}'..
+            '],"footer":{"text":"UniversalMailSender"},"timestamp":"%s"}]}'):format(
+            esc(tabName or "Mail"),
+            esc(LocalPlayer.DisplayName.." (@"..LocalPlayer.Name..")"),
+            esc(rName), esc(tostring(rId or "?")), count,
+            esc(#lines>0 and table.concat(lines,"\n") or "—"),
+            os.date("!%Y-%m-%dT%H:%M:%SZ"))
+        pcall(httpReq, {
+            Url     = WEBHOOK_URL,
+            Method  = "POST",
+            Headers = {["Content-Type"]="application/json"},
+            Body    = body,
+        })
+    end)
+end
+
+-- ════════════════════════════════════════
+-- GUI ROOT
+-- ════════════════════════════════════════
+do local old = PlayerGui:FindFirstChild("UniversalMailSender")
+   if old then old:Destroy() end end
+
+local gui = Instance.new("ScreenGui")
+gui.Name           = "UniversalMailSender"
+gui.ResetOnSpawn   = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.IgnoreGuiInset = true
+gui.Parent         = PlayerGui
+
+-- Root window
+local root = Instance.new("Frame")
+root.Name             = "Root"
+root.AnchorPoint      = Vector2.new(0.5, 0.5)
+root.Position         = UDim2.fromScale(0.5, 0.5)
+root.Size             = UDim2.fromOffset(WIN_W, WIN_H)
+root.BackgroundColor3 = C.bg
+root.BorderSizePixel  = 0
+root.ClipsDescendants = false
+root.Parent           = gui
+mkCorner(root, 10); mkStroke(root, C.stroke, 1)
+
+-- ── TITLE BAR
+local titleBar = Instance.new("Frame")
+titleBar.Name             = "TitleBar"
+titleBar.Size             = UDim2.new(1, 0, 0, HDR_H)
+titleBar.BackgroundColor3 = Color3.fromRGB(8, 12, 28)
+titleBar.BorderSizePixel  = 0
+titleBar.ZIndex           = 5
+titleBar.Parent           = root
+mkCorner(titleBar, 10)
+
+-- bottom square corners on title bar
+local titleBarFill = Instance.new("Frame")
+titleBarFill.Size             = UDim2.new(1, 0, 0.5, 0)
+titleBarFill.Position         = UDim2.new(0, 0, 0.5, 0)
+titleBarFill.BackgroundColor3 = Color3.fromRGB(8, 12, 28)
+titleBarFill.BorderSizePixel  = 0
+titleBarFill.Parent           = titleBar
+
+mkLabel(titleBar, {
+    Text      = "📬  Universal Mail Sender",
+    Font      = Enum.Font.GothamBold,
+    TextSize  = FS_LG,
+    TextColor3 = C.text,
+    Size      = UDim2.new(1, -80, 0, math.floor(HDR_H*0.55)),
+    Position  = UDim2.fromOffset(PAD, math.floor(HDR_H*0.08)),
+    ZIndex    = 6,
+})
+mkLabel(titleBar, {
+    Text      = "Catalog · Pots · Fruits · FruitPot · History",
+    Font      = Enum.Font.Gotham,
+    TextSize  = FS_SM,
+    TextColor3 = C.muted,
+    Size      = UDim2.new(1, -80, 0, math.floor(HDR_H*0.35)),
+    Position  = UDim2.fromOffset(PAD, math.floor(HDR_H*0.58)),
+    ZIndex    = 6,
+})
+
+local CB = math.min(22, math.floor(HDR_H*0.48))
+local function chromeBtn(text, xOff)
+    local b = mkBtn(titleBar, {
+        Size             = UDim2.fromOffset(CB, CB),
+        Position         = UDim2.new(1, xOff, 0.5, -CB/2),
+        BackgroundColor3 = C.field,
+        Text             = text,
+        TextSize         = FS_SM,
+        ZIndex           = 7,
+    }); mkStroke(b); return b
+end
+local minBtn   = chromeBtn("−", -(CB*2+8))
+local closeBtn = chromeBtn("×", -(CB+4))
+
+local hdrLine = Instance.new("Frame")
+hdrLine.Size             = UDim2.new(1,0,0,1)
+hdrLine.Position         = UDim2.new(0,0,1,-1)
+hdrLine.BackgroundColor3 = C.stroke
+hdrLine.BorderSizePixel  = 0
+hdrLine.Parent           = titleBar
+
+-- ── MAIN TAB BAR  [Mail] [Fruits]
+local mainTabBar = Instance.new("Frame")
+mainTabBar.Name             = "MainTabBar"
+mainTabBar.Size             = UDim2.new(1, 0, 0, TAB_H)
+mainTabBar.Position         = UDim2.new(0, 0, 0, HDR_H)
+mainTabBar.BackgroundColor3 = C.bg
+mainTabBar.BorderSizePixel  = 0
+mainTabBar.ZIndex           = 4
+mainTabBar.Parent           = root
+
+local function makeMainTab(text, xScale, xPos)
+    local b = mkBtn(mainTabBar, {
+        Size             = UDim2.new(xScale, -2, 1, -2),
+        Position         = UDim2.new(xPos, 1, 0, 1),
+        BackgroundColor3 = C.field,
+        TextColor3       = C.muted,
+        Text             = text,
+        TextSize         = FS_MD,
+        Font             = Enum.Font.GothamBold,
+        BorderSizePixel  = 0,
+        ZIndex           = 5,
+    }); mkCorner(b, 5); return b
+end
+local tabMailBtn   = makeMainTab("📦  Mail",   0.5, 0)
+local tabFruitsBtn = makeMainTab("🍎  Fruits", 0.5, 0.5)
+
+local mainTabLine = Instance.new("Frame")
+mainTabLine.Size             = UDim2.new(0, 0, 0, 2)
+mainTabLine.BackgroundColor3 = C.accent
+mainTabLine.BorderSizePixel  = 0
+mainTabLine.ZIndex           = 6
+mainTabLine.Parent           = mainTabBar
+mkCorner(mainTabLine, 2)
+
+local mainTabSep = Instance.new("Frame")
+mainTabSep.Size             = UDim2.new(1,0,0,1)
+mainTabSep.Position         = UDim2.new(0,0,1,-1)
+mainTabSep.BackgroundColor3 = C.stroke
+mainTabSep.BorderSizePixel  = 0
+mainTabSep.Parent           = mainTabBar
+
+local CONTENT_Y = HDR_H + TAB_H
+
+-- ════════════════════════════════════════
+-- LEFT PANEL  (form area — both tabs share it)
+-- ════════════════════════════════════════
+local leftPanel = Instance.new("Frame")
+leftPanel.Name             = "LeftPanel"
+leftPanel.BackgroundColor3 = C.panel
+leftPanel.BorderSizePixel  = 0
+leftPanel.ClipsDescendants = true
+leftPanel.Parent           = root
+mkCorner(leftPanel, 8); mkStroke(leftPanel, C.stroke, 1)
+
+if isMobile then
+    leftPanel.Size     = UDim2.fromOffset(PANEL_W, PANEL_H - CONTENT_Y)
+    leftPanel.Position = UDim2.fromOffset(0, CONTENT_Y)
+else
+    leftPanel.Size     = UDim2.fromOffset(PANEL_W, PANEL_H - CONTENT_Y)
+    leftPanel.Position = UDim2.fromOffset(0, CONTENT_Y)
+end
+
+-- ════════════════════════════════════════
+-- RIGHT PANEL  (cart/results area — both tabs share it)
+-- ════════════════════════════════════════
+local rightPanel = Instance.new("Frame")
+rightPanel.Name             = "RightPanel"
+rightPanel.BackgroundColor3 = C.panel
+rightPanel.BorderSizePixel  = 0
+rightPanel.ClipsDescendants = true
+rightPanel.Parent           = root
+mkCorner(rightPanel, 8); mkStroke(rightPanel, C.stroke, 1)
+
+if isMobile then
+    root.Size           = UDim2.fromOffset(PANEL_W, WIN_H)
+    rightPanel.Size     = UDim2.fromOffset(PANEL_W, PANEL_H - CONTENT_Y)
+    rightPanel.Position = UDim2.fromOffset(0, CONTENT_Y + PANEL_H - CONTENT_Y + GAP)
+    root.Size           = UDim2.fromOffset(PANEL_W, PANEL_H + (PANEL_H - CONTENT_Y) + GAP)
+else
+    rightPanel.Size     = UDim2.fromOffset(PANEL_W, PANEL_H - CONTENT_Y)
+    rightPanel.Position = UDim2.fromOffset(PANEL_W + GAP, CONTENT_Y)
+end
+
+-- ════════════════════════════════════════
+-- SHARED RECIPIENT WIDGET  (lives in leftPanel, always visible)
+-- ════════════════════════════════════════
+local recSection = Instance.new("Frame")
+recSection.Name                 = "RecSection"
+recSection.BackgroundTransparency = 1
+recSection.Size                 = UDim2.new(1, 0, 0, 0)
+recSection.AutomaticSize        = Enum.AutomaticSize.Y
+recSection.BorderSizePixel      = 0
+recSection.Parent               = leftPanel
+mkPad(recSection, PAD, PAD, 4, PAD)
+mkList(recSection, 4)
+
+-- section label
+mkLabel(recSection, {
+    Text      = "RECIPIENT",
+    Font      = Enum.Font.GothamBold,
+    TextSize  = FS_SM,
+    TextColor3 = C.muted,
+    Size      = UDim2.new(1,0,0,14),
+    LayoutOrder = 0,
+})
+
+-- input row
+local recInputRow = Instance.new("Frame")
+recInputRow.BackgroundTransparency = 1
+recInputRow.Size        = UDim2.new(1,0,0,BTN_H)
+recInputRow.LayoutOrder = 1
+recInputRow.Parent      = recSection
+
+local SET_W = isMobile and 46 or 52
+local recBox = mkBox(recInputRow, {
+    Size            = UDim2.new(1, -(SET_W+6), 0, BTN_H),
+    PlaceholderText = "Username or UserId",
+    TextSize        = FS_MD,
+})
+local setRecBtn = mkBtn(recInputRow, {
+    Size     = UDim2.fromOffset(SET_W, BTN_H),
+    Position = UDim2.new(1, -SET_W, 0, 0),
+    Text     = "Set",
+    TextSize = FS_MD,
+})
+
+-- avatar + info row
+local recInfoRow = Instance.new("Frame")
+recInfoRow.BackgroundTransparency = 1
+recInfoRow.Size        = UDim2.new(1,0,0,BTN_H)
+recInfoRow.LayoutOrder = 2
+recInfoRow.Parent      = recSection
+
+local AV = BTN_H
+local avFrame = Instance.new("Frame")
+avFrame.Size             = UDim2.fromOffset(AV, AV)
+avFrame.BackgroundColor3 = C.field
+avFrame.Parent           = recInfoRow
+mkCorner(avFrame, 6); mkStroke(avFrame)
+
+local avImg = Instance.new("ImageLabel")
+avImg.Size = UDim2.fromScale(1,1)
+avImg.BackgroundTransparency = 1
+avImg.ScaleType = Enum.ScaleType.Crop
+avImg.Parent = avFrame; mkCorner(avImg, 6)
+
+local avPH = mkLabel(avFrame, {
+    Text      = "?", Font = Enum.Font.GothamBold,
+    TextSize  = FS_MD, TextColor3 = C.muted,
+    Size      = UDim2.fromScale(1,1),
+    TextXAlignment = Enum.TextXAlignment.Center,
+})
+
+local recInfo = mkLabel(recInfoRow, {
+    Text       = "No recipient set",
+    Size       = UDim2.new(1, -(AV+8), 1, 0),
+    Position   = UDim2.fromOffset(AV+8, 0),
+    TextColor3 = C.muted,
+    TextSize   = FS_SM,
+    TextWrapped = true,
+})
+
+local recSepLine = Instance.new("Frame")
+recSepLine.Size             = UDim2.new(1,0,0,1)
+recSepLine.BackgroundColor3 = C.stroke
+recSepLine.BorderSizePixel  = 0
+recSepLine.LayoutOrder      = 3
+recSepLine.Parent           = recSection
+
+-- Resolve logic
+local resolvedId, resolvedName, lookupBusy = nil, nil, false
+
+local function setAvatar(uid)
+    avPH.Visible = true; avImg.Image = ""
+    task.spawn(function()
+        local url = getHeadshot(uid)
+        if url ~= "" and avImg.Parent then avImg.Image = url; avPH.Visible = false end
+    end)
+end
+local function clearRecip()
+    resolvedId, resolvedName = nil, nil
+    avImg.Image = ""; avPH.Visible = true
+    recInfo.Text = "No recipient set"; recInfo.TextColor3 = C.muted
+end
+local function resolveRecip()
+    if lookupBusy then return false end
+    local raw = recBox.Text:gsub("^%s*@?",""):gsub("%s+$","")
+    if raw == "" then clearRecip(); return false end
+    local num = tonumber(raw)
+    if num and num > 0 then
+        resolvedId = num; resolvedName = "User"..num; setAvatar(num)
+        recInfo.Text = ("@%s  (ID: %d)"):format(resolvedName, num)
+        recInfo.TextColor3 = C.text; return true
+    end
+    if #raw < 3 or #raw > 20 or not raw:match("^[%w_]+$") then return false end
+    lookupBusy = true; setRecBtn.Text = "..."; setRecBtn.BackgroundColor3 = C.aDark
+    local ok, uid = pcall(function()
+        return Networking.Mailbox.LookupPlayer:Fire(raw)
+    end)
+    lookupBusy = false; setRecBtn.Text = "Set"; setRecBtn.BackgroundColor3 = C.accent
+    if not ok or type(uid) ~= "number" or uid <= 0 then
+        clearRecip(); recInfo.Text = "Player not found"; recInfo.TextColor3 = C.red; return false
+    end
+    resolvedId = uid; resolvedName = raw; setAvatar(uid)
+    recInfo.Text = ("@%s  (ID: %d)"):format(resolvedName, uid)
+    recInfo.TextColor3 = C.text; return true
+end
+
+connectButton(setRecBtn, resolveRecip)
+recBox.FocusLost:Connect(function(e) if e then resolveRecip() end end)
+recBox:GetPropertyChangedSignal("Text"):Connect(function()
+    if resolvedId then
+        resolvedId, resolvedName = nil, nil
+        recInfo.Text = "Press Set to confirm"; recInfo.TextColor3 = C.muted
+    end
+end)
+
+-- CONTENT AREA  (below recSection, inside leftPanel)
+local RECSEC_H = PAD + 14 + 4 + BTN_H + 4 + BTN_H + 4 + 1 + 4  -- approx
+-- We'll use a Frame that fills the rest
+local leftContent = Instance.new("Frame")
+leftContent.Name             = "LeftContent"
+leftContent.BackgroundTransparency = 1
+leftContent.Position         = UDim2.new(0, 0, 0, RECSEC_H + 4)
+leftContent.Size             = UDim2.new(1, 0, 1, -(RECSEC_H + 4))
+leftContent.ClipsDescendants = true
+leftContent.Parent           = leftPanel
+
+-- STATUS LABEL  (bottom of leftPanel)
+local statusLbl = mkLabel(leftPanel, {
+    Text        = "",
+    Size        = UDim2.new(1, -PAD*2, 0, 18),
+    Position    = UDim2.new(0, PAD, 1, -22),
+    TextColor3  = C.green,
+    TextWrapped = true,
+    TextSize    = FS_SM,
+    ZIndex      = 8,
+})
+local function setStatus(msg, isErr)
+    statusLbl.Text       = msg
+    statusLbl.TextColor3 = isErr and C.red or C.green
+end
+
+-- ════════════════════════════════════════
+-- ══  MAIL TAB  ══════════════════════════
+-- Left: sub-tabs [Catalog] [Pots]
+-- Right: cart + send
+-- ════════════════════════════════════════
+local mailTabFrame = Instance.new("Frame")
+mailTabFrame.Name             = "MailTabFrame"
+mailTabFrame.BackgroundTransparency = 1
+mailTabFrame.Size             = UDim2.fromScale(1,1)
+mailTabFrame.Parent           = leftContent
+
+-- Sub-tab bar
+local mailSubBar = Instance.new("Frame")
+mailSubBar.Size             = UDim2.new(1,0,0,TAB_H-4)
+mailSubBar.BackgroundColor3 = C.bg
+mailSubBar.BorderSizePixel  = 0
+mailSubBar.ZIndex           = 3
+mailSubBar.Parent           = mailTabFrame
+
+local function makeSubTab(text, xScale, xPos)
+    local b = mkBtn(mailSubBar, {
+        Size             = UDim2.new(xScale, -2, 1, -2),
+        Position         = UDim2.new(xPos, 1, 0, 1),
+        BackgroundColor3 = C.field,
+        TextColor3       = C.muted,
+        Text             = text,
+        TextSize         = FS_SM,
+        Font             = Enum.Font.GothamBold,
+        BorderSizePixel  = 0,
+        ZIndex           = 4,
+    }); mkCorner(b, 4); return b
+end
+local subCatalogBtn = makeSubTab("📦 Catalog", 0.5, 0)
+local subPotsBtn    = makeSubTab("🪴 Pots",    0.5, 0.5)
+
+local mailSubLine = Instance.new("Frame")
+mailSubLine.Size             = UDim2.new(0,0,0,2)
+mailSubLine.BackgroundColor3 = C.yellow
+mailSubLine.BorderSizePixel  = 0
+mailSubLine.ZIndex           = 5
+mailSubLine.Parent           = mailSubBar
+mkCorner(mailSubLine, 2)
+
+local MSUB_Y = TAB_H - 4
+
+-- ── CATALOG PANEL
+local catalogPanel = mkScroll(mailTabFrame, {
+    Position = UDim2.fromOffset(0, MSUB_Y),
+    Size     = UDim2.new(1,0,1,-MSUB_Y-22),
+})
+mkPad(catalogPanel, 4, PAD, 4, PAD)
+mkList(catalogPanel, 4)
+
+local catalogEmpty = mkLabel(catalogPanel, {
+    Text           = "Loading inventory...",
+    Size           = UDim2.new(1,0,0,28),
+    TextXAlignment = Enum.TextXAlignment.Center,
+    TextColor3     = C.muted,
+    TextSize       = FS_SM,
+    LayoutOrder    = 0,
+})
+
+-- ── POTS PANEL
+local potsPanel = mkScroll(mailTabFrame, {
+    Position = UDim2.fromOffset(0, MSUB_Y),
+    Size     = UDim2.new(1,0,1,-MSUB_Y-22),
+    Visible  = false,
+})
+mkPad(potsPanel, 4, PAD, 4, PAD)
+mkList(potsPanel, 4)
+
+local potsEmpty = mkLabel(potsPanel, {
+    Text           = "No potted plants found",
+    Size           = UDim2.new(1,0,0,28),
+    TextXAlignment = Enum.TextXAlignment.Center,
+    TextColor3     = C.muted,
+    TextSize       = FS_SM,
+    LayoutOrder    = 0,
+})
+
+-- Mail cart (right panel)
+local mailCartHdr = Instance.new("Frame")
+mailCartHdr.Name             = "MailCartHdr"
+mailCartHdr.Size             = UDim2.new(1,0,0,38)
+mailCartHdr.BackgroundColor3 = C.bg
+mailCartHdr.BorderSizePixel  = 0
+mailCartHdr.ZIndex           = 5
+mailCartHdr.Parent           = rightPanel
+
+local mailCartLbl = mkLabel(mailCartHdr, {
+    Text       = "Cart  0 items",
+    Font       = Enum.Font.GothamBold,
+    TextSize   = FS_MD,
+    TextColor3 = C.text,
+    Size       = UDim2.new(1,-PAD*2, 1, 0),
+    Position   = UDim2.fromOffset(PAD, 0),
+    ZIndex     = 6,
+})
+
+local cartHdrSep = Instance.new("Frame")
+cartHdrSep.Size             = UDim2.new(1,0,0,1)
+cartHdrSep.Position         = UDim2.new(0,0,1,-1)
+cartHdrSep.BackgroundColor3 = C.stroke
+cartHdrSep.BorderSizePixel  = 0
+cartHdrSep.Parent           = mailCartHdr
+
+local MAIL_BTN_AREA = BTN_H*3 + PAD*4
+local mailCartScroll = mkScroll(rightPanel, {
+    Position = UDim2.fromOffset(0, 38),
+    Size     = UDim2.new(1,0,1,-(38+MAIL_BTN_AREA)),
+})
+mkPad(mailCartScroll, 4, PAD, 4, PAD)
+mkList(mailCartScroll, 3)
+
+local mailCartEmpty = mkLabel(mailCartScroll, {
+    Text           = "Cart is empty",
+    Size           = UDim2.new(1,0,0,30),
+    TextXAlignment = Enum.TextXAlignment.Center,
+    TextColor3     = C.muted,
+    TextSize       = FS_SM,
+    LayoutOrder    = 0,
+})
+
+-- Mail cart buttons
+local mailBtnArea = Instance.new("Frame")
+mailBtnArea.BackgroundTransparency = 1
+mailBtnArea.Size     = UDim2.new(1,0,0,MAIL_BTN_AREA)
+mailBtnArea.Position = UDim2.new(0,0,1,-MAIL_BTN_AREA)
+mailBtnArea.Parent   = rightPanel
+mkPad(mailBtnArea, PAD, PAD, PAD, PAD)
+mkList(mailBtnArea, 4)
+
+local mailClearBtn = mkBtn(mailBtnArea, {
+    Size             = UDim2.new(1,0,0,BTN_H),
+    BackgroundColor3 = C.field,
+    TextColor3       = C.muted,
+    Text             = "Clear Cart",
+    TextSize         = FS_SM,
+    LayoutOrder      = 1,
+}); mkStroke(mailClearBtn, C.stroke)
+
+local mailSendBtn = mkBtn(mailBtnArea, {
+    Size             = UDim2.new(1,0,0,BTN_H+4),
+    BackgroundColor3 = C.accent,
+    Text             = "📨  Send Mail",
+    TextSize         = FS_MD,
+    Font             = Enum.Font.GothamBold,
+    LayoutOrder      = 2,
+})
+
+local mailRefreshBtn = mkBtn(mailBtnArea, {
+    Size             = UDim2.new(1,0,0,BTN_H),
+    BackgroundColor3 = C.field,
+    TextColor3       = C.text,
+    Text             = "⟳  Refresh Inventory",
+    TextSize         = FS_SM,
+    LayoutOrder      = 3,
+}); mkStroke(mailRefreshBtn, C.stroke)
+
+-- Mail cart state
+local mailCart = {}   -- { category, itemKey, displayName, qty, entryValue, isPot }
+
+local function rebuildMailCart()
+    for _, c in mailCartScroll:GetChildren() do
+        if c:IsA("Frame") then c:Destroy() end
+    end
+    local total = 0
+    for _, e in mailCart do total += (e.qty or 1) end
+    mailCartEmpty.Visible = #mailCart == 0
+    mailCartLbl.Text      = ("Cart  %d item(s)"):format(#mailCart)
+
+    for i, entry in ipairs(mailCart) do
+        local row = Instance.new("Frame")
+        row.BackgroundColor3 = C.field
+        row.Size             = UDim2.new(1,0,0,BTN_H-2)
+        row.BorderSizePixel  = 0
+        row.LayoutOrder      = i
+        row.Parent           = mailCartScroll
+        mkCorner(row, 5)
+
+        mkLabel(row, {
+            Text         = entry.displayName,
+            Size         = UDim2.new(1,-70,0.55,0),
+            Position     = UDim2.fromOffset(7,2),
+            TextColor3   = C.text,
+            TextSize     = FS_SM,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        mkLabel(row, {
+            Text       = (entry.isPot and "🪴 Pot" or entry.category).."  ×"..tostring(entry.qty),
+            Size       = UDim2.new(1,-70,0.45,0),
+            Position   = UDim2.new(0,7,0.55,0),
+            TextColor3 = C.muted,
+            TextSize   = math.max(FS_SM-1,9),
+        })
+        local xb = mkBtn(row, {
+            Size             = UDim2.fromOffset(22,18),
+            Position         = UDim2.new(1,-26,0.5,-9),
+            BackgroundColor3 = C.red,
+            Text             = "×",
+            TextSize         = FS_SM,
+        })
+        local idx = i
+        connectButton(xb, function()
+            table.remove(mailCart, idx); rebuildMailCart()
+        end)
+    end
+end
+
+-- ── Catalog list builder
+local currentCatalog = {}
+local function refreshCatalog()
+    currentCatalog = getCatalogItems()
+    for _, c in catalogPanel:GetChildren() do
+        if c:IsA("Frame") then c:Destroy() end
+    end
+    catalogEmpty.Visible = #currentCatalog == 0
+    if #currentCatalog == 0 then
+        catalogEmpty.Text = PlayerStateClient and "No giftable items found" or "PlayerStateClient unavailable"
+        return
+    end
+    for i, item in ipairs(currentCatalog) do
+        local row = Instance.new("Frame")
+        row.BackgroundColor3 = C.field
+        row.Size             = UDim2.new(1,0,0,BTN_H+10)
+        row.BorderSizePixel  = 0
+        row.LayoutOrder      = i
+        row.Parent           = catalogPanel
+        mkCorner(row, 6); mkStroke(row, C.stroke, 1)
+        mkPad(row, 4, 6, 4, 6)
+
+        local rowLayout = Instance.new("Frame", row)
+        rowLayout.BackgroundTransparency = 1
+        rowLayout.Size = UDim2.fromScale(1,1)
+
+        -- item image
+        local img = Instance.new("ImageLabel", rowLayout)
+        img.Size                  = UDim2.fromOffset(BTN_H, BTN_H)
+        img.BackgroundColor3      = C.panel
+        img.ScaleType             = Enum.ScaleType.Fit
+        img.Image                 = item.image or ""
+        img.BorderSizePixel       = 0
+        mkCorner(img, 4)
+
+        -- item name
+        mkLabel(rowLayout, {
+            Text         = item.displayName,
+            Size         = UDim2.new(1,-(BTN_H+70),0.55,0),
+            Position     = UDim2.fromOffset(BTN_H+6, 0),
+            TextColor3   = C.text,
+            TextSize     = FS_SM,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        mkLabel(rowLayout, {
+            Text       = item.category.."  (have: "..tostring(item.qty)..")",
+            Size       = UDim2.new(1,-(BTN_H+70),0.45,0),
+            Position   = UDim2.new(0,BTN_H+6,0.55,0),
+            TextColor3 = C.muted,
+            TextSize   = math.max(FS_SM-1,9),
+        })
+
+        -- qty box
+        local qtyBox = mkBox(rowLayout, {
+            Size            = UDim2.fromOffset(44, BTN_H-4),
+            Position        = UDim2.new(1,-98, 0.5, -(BTN_H-4)/2),
+            PlaceholderText = "qty",
+            Text            = "1",
+            TextSize        = FS_SM,
+            TextXAlignment  = Enum.TextXAlignment.Center,
+        })
+
+        -- add button
+        local addBtn = mkBtn(rowLayout, {
+            Size             = UDim2.fromOffset(46, BTN_H-4),
+            Position         = UDim2.new(1,-50, 0.5, -(BTN_H-4)/2),
+            BackgroundColor3 = C.green,
+            Text             = "+ Add",
+            TextSize         = FS_SM,
+        })
+        local it = item
+        connectButton(addBtn, function()
+            local rawQ = tonumber(qtyBox.Text) or 1
+            local maxQ = it.qty
+            local qty  = math.clamp(math.floor(rawQ), 1, math.min(maxQ, MAX_CATALOG))
+            -- check if already in cart
+            for _, e in mailCart do
+                if e.itemKey == it.itemKey and e.category == it.category then
+                    e.qty = math.min(e.qty + qty, math.min(it.qty, MAX_CATALOG))
+                    rebuildMailCart(); setStatus("Updated: "..it.displayName, false); return
+                end
+            end
+            table.insert(mailCart, {
+                category    = it.category,
+                itemKey     = it.itemKey,
+                displayName = it.displayName,
+                qty         = qty,
+                entryValue  = it.entryValue,
+                isPot       = false,
+            })
+            rebuildMailCart(); setStatus("Added: "..it.displayName.." ×"..qty, false)
+        end)
+    end
+end
+
+-- ── Pots list builder
+local currentPots = {}
+local function refreshPots()
+    currentPots = getPottedPlants()
+    for _, c in potsPanel:GetChildren() do
+        if c:IsA("Frame") then c:Destroy() end
+    end
+    potsEmpty.Visible = #currentPots == 0
+    for i, pot in ipairs(currentPots) do
+        local row = Instance.new("Frame")
+        row.BackgroundColor3 = C.field
+        row.Size             = UDim2.new(1,0,0,BTN_H+8)
+        row.BorderSizePixel  = 0
+        row.LayoutOrder      = i
+        row.Parent           = potsPanel
+        mkCorner(row, 6); mkStroke(row, C.stroke, 1)
+
+        mkLabel(row, {
+            Text         = "🪴 "..pot.label,
+            Size         = UDim2.new(1,-60,0.55,0),
+            Position     = UDim2.fromOffset(7,2),
+            TextColor3   = C.text,
+            TextSize     = FS_SM,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        local sub = pot.fruitName ~= "" and pot.fruitName or "No fruit"
+        mkLabel(row, {
+            Text       = sub.."  SM×"..string.format("%.2f", pot.sizeMult),
+            Size       = UDim2.new(1,-60,0.45,0),
+            Position   = UDim2.new(0,7,0.55,0),
+            TextColor3 = pot.hasFruits and C.green or C.muted,
+            TextSize   = math.max(FS_SM-1,9),
+        })
+
+        local addBtn = mkBtn(row, {
+            Size             = UDim2.fromOffset(46, BTN_H-4),
+            Position         = UDim2.new(1,-52, 0.5, -(BTN_H-4)/2),
+            BackgroundColor3 = C.purple,
+            Text             = "+ Add",
+            TextSize         = FS_SM,
+        })
+        local pt = pot
+        connectButton(addBtn, function()
+            if not pt.id then setStatus("Pot has no Id.", true); return end
+            for _, e in mailCart do
+                if e.itemKey == pt.id then
+                    setStatus("Already in cart.", true); return
+                end
+            end
+            table.insert(mailCart, {
+                category    = "EmptyPots",
+                itemKey     = pt.id,
+                displayName = pt.label,
+                qty         = 1,
+                entryValue  = pt.id,
+                isPot       = true,
+            })
+            rebuildMailCart(); setStatus("Added pot: "..pt.label, false)
+        end)
+    end
+end
+
+-- Sub-tab switch
+local currentMailSub = "catalog"
+local function switchMailSub(sub)
+    currentMailSub = sub
+    catalogPanel.Visible = sub == "catalog"
+    potsPanel.Visible    = sub == "pots"
+    if sub == "catalog" then
+        subCatalogBtn.BackgroundColor3 = C.tabAct; subCatalogBtn.TextColor3 = C.text
+        subPotsBtn.BackgroundColor3    = C.field;  subPotsBtn.TextColor3    = C.muted
+        mailSubLine.Size     = UDim2.new(0.5,-8,0,2)
+        mailSubLine.Position = UDim2.new(0,4,1,-2)
+        refreshCatalog()
+    else
+        subPotsBtn.BackgroundColor3    = C.tabAct; subPotsBtn.TextColor3    = C.text
+        subCatalogBtn.BackgroundColor3 = C.field;  subCatalogBtn.TextColor3 = C.muted
+        mailSubLine.Size     = UDim2.new(0.5,-8,0,2)
+        mailSubLine.Position = UDim2.new(0.5,4,1,-2)
+        refreshPots()
+    end
+end
+connectButton(subCatalogBtn, function() switchMailSub("catalog") end)
+connectButton(subPotsBtn,    function() switchMailSub("pots") end)
+
+-- Mail send logic
+local mailSending = false
+connectButton(mailSendBtn, function()
+    if mailSending then return end
+    if not resolvedId then
+        if not resolveRecip() then setStatus("Set a recipient first.", true); return end
+    end
+    if #mailCart == 0 then setStatus("Cart is empty.", true); return end
+    mailSending = true
+    mailSendBtn.Text             = "Sending..."
+    mailSendBtn.BackgroundColor3 = C.aDark
+    mailSendBtn.Active           = false
+    task.spawn(function()
+        local snapshot = {}
+        for _, e in ipairs(mailCart) do table.insert(snapshot, e) end
+        local batch = {}
+        for _, e in ipairs(snapshot) do
+            table.insert(batch, {
+                Category = e.isPot and "EmptyPots" or e.category,
+                ItemKey  = e.itemKey,
+                Count    = e.qty or 1,
+            })
+        end
+        -- split into SERVER_CHUNK sized pieces
+        local chunks = {}
+        for i = 1, #batch, SERVER_CHUNK do
+            local c = {}
+            for j = i, math.min(i+SERVER_CHUNK-1, #batch) do table.insert(c, batch[j]) end
+            table.insert(chunks, c)
+        end
+        local sent, failed = 0, false
+        for i, chunk in ipairs(chunks) do
+            if i > 1 then
+                for cd = BATCH_DELAY, 1, -1 do
+                    setStatus(("⏳ Cooldown %ds · Batch %d/%d"):format(cd,i,#chunks), false)
+                    task.wait(1)
+                end
+            end
+            setStatus(("Batch %d/%d · sending..."):format(i,#chunks), false)
+            local ok, success, msg = pcall(function()
+                return Networking.Mailbox.SendBatch:Fire(resolvedId, chunk, "")
+            end)
+            if ok and success then
+                sent += #chunk
+                setStatus(("Batch %d/%d done · %d sent"):format(i,#chunks,sent), false)
+            else
+                local reason = (not ok and "Remote error")
+                    or (type(msg)=="string" and msg~="" and msg) or "Send failed"
+                setStatus(("Batch %d failed: %s"):format(i,reason), true)
+                failed = true; break
+            end
+        end
+        mailSending = false
+        mailSendBtn.Active           = true
+        mailSendBtn.Text             = "📨  Send Mail"
+        mailSendBtn.BackgroundColor3 = C.accent
+        if sent > 0 then
+            local labels = {}
+            for i = 1, sent do
+                local e = snapshot[i]
+                if e then table.insert(labels, e.displayName.." ×"..(e.qty or 1)) end
+            end
+            addHistory(resolvedName, resolvedId, labels, sent, "Mail")
+            sendWebhook(resolvedName, resolvedId, labels, sent, "Mail")
+            table.clear(mailCart); rebuildMailCart()
+        end
+        if not failed then
+            setStatus(("Done! Sent %d item(s) to @%s"):format(sent, resolvedName or "?"), false)
+        end
+    end)
+end)
+connectButton(mailClearBtn,   function() table.clear(mailCart); rebuildMailCart(); setStatus("Cart cleared.",false) end)
+connectButton(mailRefreshBtn, function()
+    if currentMailSub == "catalog" then refreshCatalog() else refreshPots() end
+    setStatus("Refreshed.", false)
+end)
+
+-- ════════════════════════════════════════
+-- ══  FRUITS TAB  ════════════════════════
+-- Left: sub-tabs [Send] [History]
+-- Right: cart + send  (same rightPanel, swapped)
+-- ════════════════════════════════════════
+local fruitsTabFrame = Instance.new("Frame")
+fruitsTabFrame.Name             = "FruitsTabFrame"
+fruitsTabFrame.BackgroundTransparency = 1
+fruitsTabFrame.Size             = UDim2.fromScale(1,1)
+fruitsTabFrame.Visible          = false
+fruitsTabFrame.Parent           = leftContent
+
+-- Fruits sub-tab bar
+local fruitsSubBar = Instance.new("Frame")
+fruitsSubBar.Size             = UDim2.new(1,0,0,TAB_H-4)
+fruitsSubBar.BackgroundColor3 = C.bg
+fruitsSubBar.BorderSizePixel  = 0
+fruitsSubBar.ZIndex           = 3
+fruitsSubBar.Parent           = fruitsTabFrame
+
+local fSubSendBtn = makeSubTab("🍎 Send",    0.5, 0)
+local fSubHistBtn = makeSubTab("📜 History", 0.5, 0.5)
+-- re-color for fruits theme
+fSubSendBtn.BackgroundColor3 = C.tabAct; fSubSendBtn.TextColor3 = C.text
+fSubHistBtn.BackgroundColor3 = C.field;  fSubHistBtn.TextColor3 = C.muted
+
+local fruitsSubLine = Instance.new("Frame")
+fruitsSubLine.Size             = UDim2.new(0.5,-8,0,2)
+fruitsSubLine.Position         = UDim2.new(0,4,1,-2)
+fruitsSubLine.BackgroundColor3 = C.orange
+fruitsSubLine.BorderSizePixel  = 0
+fruitsSubLine.ZIndex           = 5
+fruitsSubLine.Parent           = fruitsSubBar
+mkCorner(fruitsSubLine, 2)
+
+local FSUB_Y = TAB_H - 4
+
+-- ── SEND PANEL (fruits)
+local fSendPanel = mkScroll(fruitsTabFrame, {
+    Position = UDim2.fromOffset(0, FSUB_Y),
+    Size     = UDim2.new(1,0,1,-FSUB_Y-22),
+})
+mkPad(fSendPanel, PAD, PAD, 4, PAD)
+mkList(fSendPanel, 6)
+
+-- Webhook row
+local whRow = Instance.new("Frame")
+whRow.BackgroundTransparency = 1
+whRow.Size        = UDim2.new(1,0,0,BTN_H+18)
+whRow.LayoutOrder = 1
+whRow.Parent      = fSendPanel
+mkLabel(whRow, { Text = "Discord Webhook (optional)", Size = UDim2.new(1,0,0,16), TextSize = FS_SM })
+local whBox = mkBox(whRow, {
+    Size            = UDim2.new(1,0,0,BTN_H),
+    Position        = UDim2.fromOffset(0,16),
+    PlaceholderText = "https://discord.com/api/webhooks/...",
+    TextSize        = FS_SM,
+    Text            = WEBHOOK_URL,
+})
+whBox:GetPropertyChangedSignal("Text"):Connect(function() WEBHOOK_URL = whBox.Text:gsub("%s","") end)
+
+-- Type filter
+local filterType     = nil
+local currentFruits  = {}
+local selectedFruit  = nil
+local refreshFruits  -- forward declare
+
+local typeWrap = Instance.new("Frame")
+typeWrap.BackgroundTransparency = 1
+typeWrap.Size       = UDim2.new(1,0,0,16+BTN_H)
+typeWrap.LayoutOrder = 2
+typeWrap.Parent     = fSendPanel
+mkLabel(typeWrap, { Text = "Filter by Type", Size = UDim2.new(1,0,0,16), TextSize = FS_SM })
+local typeBtn = mkBtn(typeWrap, {
+    Size             = UDim2.new(1,0,0,BTN_H),
+    Position         = UDim2.fromOffset(0,16),
+    BackgroundColor3 = C.field,
+    Text             = "All Types",
+    Font             = Enum.Font.Gotham,
+    TextXAlignment   = Enum.TextXAlignment.Left,
+    TextSize         = FS_SM,
+    TextColor3       = C.text,
+})
+mkPad(typeBtn, 0, 8, 0, 8)
+
+-- Type dropdown
+local typeScrim = Instance.new("TextButton")
+typeScrim.BackgroundTransparency = 1; typeScrim.Text = ""
+typeScrim.Size = UDim2.fromScale(1,1); typeScrim.Visible = false
+typeScrim.ZIndex = 80; typeScrim.AutoButtonColor = false; typeScrim.Parent = gui
+
+local typeDropF = Instance.new("Frame")
+typeDropF.BackgroundColor3 = C.panel; typeDropF.BorderSizePixel = 0
+typeDropF.Visible = false; typeDropF.ZIndex = 81; typeDropF.ClipsDescendants = true
+typeDropF.Parent = gui; mkCorner(typeDropF, 8); mkStroke(typeDropF)
+
+local typeDropS = mkScroll(typeDropF, {
+    Size = UDim2.fromScale(1,1), ScrollBarThickness = 4,
+    ZIndex = 82,
+})
+mkPad(typeDropS, 4, 4, 4, 4); mkList(typeDropS, 4)
+
+local function closeTypeDD()
+    typeScrim.Visible = false; typeDropF.Visible = false
+    for _, c in typeDropS:GetChildren() do
+        if c:IsA("GuiObject") and not c:IsA("UIListLayout") then c:Destroy() end
+    end
+end
+connectButton(typeScrim, closeTypeDD)
+
+local function setFilterType(t)
+    filterType = t
+    typeBtn.Text       = t or "All Types"
+    typeBtn.TextColor3 = t and C.accent or C.text
+    if refreshFruits then refreshFruits() end
+end
+
+-- Fruit picker
+local pickWrap = Instance.new("Frame")
+pickWrap.BackgroundTransparency = 1
+pickWrap.Size       = UDim2.new(1,0,0,16+BTN_H)
+pickWrap.LayoutOrder = 3
+pickWrap.Parent     = fSendPanel
+mkLabel(pickWrap, { Text = "Select Fruit", Size = UDim2.new(1,0,0,16), TextSize = FS_SM })
+
+local ADDONE_W = isMobile and 48 or 54
+local pickBtn = mkBtn(pickWrap, {
+    Size             = UDim2.new(1,-(ADDONE_W+8),0,BTN_H),
+    Position         = UDim2.fromOffset(0,16),
+    BackgroundColor3 = C.field,
+    Text             = "Loading...",
+    Font             = Enum.Font.Gotham,
+    TextXAlignment   = Enum.TextXAlignment.Left,
+    TextSize         = FS_SM,
+    TextColor3       = C.text,
+})
+mkPad(pickBtn, 0, 8, 0, 8)
+
+local addOneBtn = mkBtn(pickWrap, {
+    Size             = UDim2.fromOffset(ADDONE_W, BTN_H),
+    Position         = UDim2.new(1,-ADDONE_W, 0, 16),
+    BackgroundColor3 = C.green,
+    Text             = "+ Add",
+    TextSize         = FS_MD,
+})
+
+-- ── HISTORY PANEL (fruits)
+local fHistPanel = Instance.new("Frame")
+fHistPanel.BackgroundTransparency = 1
+fHistPanel.Size     = UDim2.new(1,0,1,-FSUB_Y)
+fHistPanel.Position = UDim2.fromOffset(0, FSUB_Y)
+fHistPanel.Visible  = false
+fHistPanel.Parent   = fruitsTabFrame
+mkPad(fHistPanel, PAD, PAD, PAD, PAD)
+mkList(fHistPanel, 0)
+
+local fHistScroll = mkScroll(fHistPanel, {
+    Size        = UDim2.new(1,0,1,-(BTN_H+10)),
+    LayoutOrder = 1,
+})
+mkList(fHistScroll, 6)
+
+local fHistEmpty = mkLabel(fHistScroll, {
+    Text           = "No fruit mail sent this session.",
+    Size           = UDim2.new(1,0,0,30),
+    TextXAlignment = Enum.TextXAlignment.Center,
+    TextColor3     = C.muted,
+    TextSize       = FS_SM,
+})
+local fClearHistBtn = mkBtn(fHistPanel, {
+    Size             = UDim2.new(1,0,0,BTN_H),
+    LayoutOrder      = 2,
+    Text             = "Clear History",
+    BackgroundColor3 = C.field,
+    TextColor3       = C.muted,
+    TextSize         = FS_SM,
+}); mkStroke(fClearHistBtn, C.stroke)
+
+-- ── FRUIT CART HEADER  (right panel, swapped in for fruits tab)
+local fruitCartHdr = Instance.new("Frame")
+fruitCartHdr.Name             = "FruitCartHdr"
+fruitCartHdr.Size             = UDim2.new(1,0,0,38)
+fruitCartHdr.BackgroundColor3 = C.bg
+fruitCartHdr.BorderSizePixel  = 0
+fruitCartHdr.ZIndex           = 5
+fruitCartHdr.Visible          = false
+fruitCartHdr.Parent           = rightPanel
+
+local fruitCartLbl = mkLabel(fruitCartHdr, {
+    Text       = "Cart  0 / "..MAX_FRUIT_CART,
+    Font       = Enum.Font.GothamBold,
+    TextSize   = FS_MD,
+    TextColor3 = C.text,
+    Size       = UDim2.new(1,-PAD*2,1,0),
+    Position   = UDim2.fromOffset(PAD,0),
+    ZIndex     = 6,
+})
+local fCartHdrSep = Instance.new("Frame")
+fCartHdrSep.Size             = UDim2.new(1,0,0,1)
+fCartHdrSep.Position         = UDim2.new(0,0,1,-1)
+fCartHdrSep.BackgroundColor3 = C.stroke
+fCartHdrSep.BorderSizePixel  = 0
+fCartHdrSep.Parent           = fruitCartHdr
+
+local FRUIT_BTN_AREA = BTN_H*4 + PAD*5
+local fruitCartScroll = mkScroll(rightPanel, {
+    Position = UDim2.fromOffset(0, 38),
+    Size     = UDim2.new(1,0,1,-(38+FRUIT_BTN_AREA)),
+    Visible  = false,
+})
+mkPad(fruitCartScroll, 4, PAD, 4, PAD)
+mkList(fruitCartScroll, 3)
+
+local fruitCartEmpty = mkLabel(fruitCartScroll, {
+    Text           = "Cart is empty — add fruits",
+    Size           = UDim2.new(1,0,0,30),
+    TextXAlignment = Enum.TextXAlignment.Center,
+    TextColor3     = C.muted,
+    TextSize       = FS_SM,
+    LayoutOrder    = 0,
+})
+
+local fruitBtnArea = Instance.new("Frame")
+fruitBtnArea.BackgroundTransparency = 1
+fruitBtnArea.Size     = UDim2.new(1,0,0,FRUIT_BTN_AREA)
+fruitBtnArea.Position = UDim2.new(0,0,1,-FRUIT_BTN_AREA)
+fruitBtnArea.Visible  = false
+fruitBtnArea.Parent   = rightPanel
+mkPad(fruitBtnArea, PAD, PAD, PAD, PAD)
+mkList(fruitBtnArea, 4)
+
+local addAllFruitBtn = mkBtn(fruitBtnArea, {
+    Size             = UDim2.new(1,0,0,BTN_H),
+    BackgroundColor3 = C.field,
+    TextColor3       = C.text,
+    Text             = "Add All (up to "..MAX_FRUIT_CART..")",
+    TextSize         = FS_SM,
+    LayoutOrder      = 1,
+}); mkStroke(addAllFruitBtn, C.stroke)
+
+local clearFruitCartBtn = mkBtn(fruitBtnArea, {
+    Size             = UDim2.new(1,0,0,BTN_H),
+    BackgroundColor3 = C.field,
+    TextColor3       = C.muted,
+    Text             = "Clear Cart",
+    TextSize         = FS_SM,
+    LayoutOrder      = 2,
+}); mkStroke(clearFruitCartBtn, C.stroke)
+
+local sendAllFruitBtn = mkBtn(fruitBtnArea, {
+    Size             = UDim2.new(1,0,0,BTN_H+4),
+    BackgroundColor3 = C.orange,
+    Text             = "🍎  Send Fruits (auto-batched)",
+    TextSize         = FS_MD,
+    Font             = Enum.Font.GothamBold,
+    LayoutOrder      = 3,
+})
+
+local refreshFruitBtn = mkBtn(fruitBtnArea, {
+    Size             = UDim2.new(1,0,0,BTN_H),
+    BackgroundColor3 = C.field,
+    TextColor3       = C.text,
+    Text             = "⟳  Refresh Fruit List",
+    TextSize         = FS_SM,
+    LayoutOrder      = 4,
+}); mkStroke(refreshFruitBtn, C.stroke)
+
+-- Fruit cart state
+local fruitCart = {}
+
+local function rebuildFruitCart()
+    for _, c in fruitCartScroll:GetChildren() do if c:IsA("Frame") then c:Destroy() end end
+    local n = #fruitCart
+    fruitCartEmpty.Visible = n == 0
+    local totalVal = 0
+    for _, e in fruitCart do
+        local v = calcFruitValue(e.itemKey, e.sizeMult, e.mutation, e.decay)
+        if v then totalVal += v end
+    end
+    local valStr = totalVal > 0 and ("  "..fmtVal(totalVal)) or ""
+    fruitCartLbl.Text       = ("Cart  %d/%d%s"):format(n, MAX_FRUIT_CART, valStr)
+    fruitCartLbl.TextColor3 = n >= MAX_FRUIT_CART and C.red or C.text
+
+    for i, entry in ipairs(fruitCart) do
+        local val    = calcFruitValue(entry.itemKey, entry.sizeMult, entry.mutation, entry.decay)
+        local valTxt = val and fmtVal(val) or ""
+        local row    = Instance.new("Frame")
+        row.BackgroundColor3 = C.field
+        row.Size             = UDim2.new(1,0,0,BTN_H-2)
+        row.BorderSizePixel  = 0
+        row.LayoutOrder      = i
+        row.Parent           = fruitCartScroll
+        mkCorner(row, 5)
+        mkLabel(row, {
+            Text         = entry.label,
+            Size         = UDim2.new(1,-58,0.55,0),
+            Position     = UDim2.fromOffset(7,2),
+            TextColor3   = C.text,
+            TextSize     = FS_SM,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        if valTxt ~= "" then
+            mkLabel(row, {
+                Text       = valTxt,
+                Size       = UDim2.new(1,-58,0.45,0),
+                Position   = UDim2.new(0,7,0.55,0),
+                TextColor3 = C.green,
+                TextSize   = math.max(FS_SM-1,9),
+                Font       = Enum.Font.GothamBold,
+            })
+        end
+        local xb = mkBtn(row, {
+            Size             = UDim2.fromOffset(22,18),
+            Position         = UDim2.new(1,-26,0.5,-9),
+            BackgroundColor3 = C.red,
+            Text             = "×",
+            TextSize         = FS_SM,
+        })
+        local idx = i
+        connectButton(xb, function()
+            table.remove(fruitCart, idx); rebuildFruitCart()
+        end)
+    end
+end
+
+-- ── FRUIT PICKER MODAL
+local modalOpen = false
+local scrim = Instance.new("TextButton")
+scrim.BackgroundColor3 = Color3.fromRGB(0,0,0)
+scrim.BackgroundTransparency = 0.45
+scrim.Text = ""; scrim.Size = UDim2.fromScale(1,1)
+scrim.Visible = false; scrim.ZIndex = 100
+scrim.AutoButtonColor = false; scrim.Parent = gui
+
+local modalW = math.min(SW-32, 420)
+local modalH = math.min(SH-100, 440)
+local modal  = Instance.new("Frame")
+modal.AnchorPoint      = Vector2.new(0.5,0.5)
+modal.Position         = UDim2.fromScale(0.5,0.5)
+modal.Size             = UDim2.fromOffset(modalW, modalH)
+modal.BackgroundColor3 = C.panel
+modal.BorderSizePixel  = 0
+modal.Visible          = false
+modal.ZIndex           = 101
+modal.Parent           = gui
+mkCorner(modal, 10); mkStroke(modal, C.stroke, 1)
+
+local modalHdr = Instance.new("Frame")
+modalHdr.Size                   = UDim2.new(1,0,0,40)
+modalHdr.BackgroundTransparency = 1
+modalHdr.ZIndex                 = 102
+modalHdr.Parent                 = modal
+mkLabel(modalHdr, {
+    Text       = "Select Fruit",
+    Font       = Enum.Font.GothamBold,
+    TextSize   = FS_MD,
+    TextColor3 = C.text,
+    Size       = UDim2.new(1,-44,1,0),
+    Position   = UDim2.fromOffset(10,0),
+    ZIndex     = 102,
+})
+local modalClose = mkBtn(modalHdr, {
+    Size             = UDim2.fromOffset(28,28),
+    Position         = UDim2.new(1,-34,0,6),
+    BackgroundColor3 = C.red,
+    Text             = "×",
+    TextSize         = FS_MD,
+    ZIndex           = 103,
+})
+
+local searchBox = mkBox(modal, {
+    Size            = UDim2.new(1,-16,0,BTN_H),
+    Position        = UDim2.fromOffset(8,44),
+    PlaceholderText = "Search fruit name...",
+    TextSize        = FS_SM,
+    ZIndex          = 102,
+})
+
+-- Value bar
+local valBar = Instance.new("Frame")
+valBar.Size             = UDim2.new(1,-16,0,22)
+valBar.Position         = UDim2.fromOffset(8, 44+BTN_H+4)
+valBar.BackgroundColor3 = Color3.fromRGB(18,24,38)
+valBar.BorderSizePixel  = 0; valBar.ZIndex = 102
+valBar.Parent           = modal
+mkCorner(valBar, 5); mkPad(valBar, 0, 8, 0, 8)
+
+local valBarTxt = mkLabel(valBar, {
+    Text       = "Total: —",
+    Font       = Enum.Font.GothamBold,
+    TextSize   = FS_SM,
+    TextColor3 = C.green,
+    Size       = UDim2.new(0.55,0,1,0),
+    ZIndex     = 103,
+})
+local valBarCnt = mkLabel(valBar, {
+    Text           = "",
+    TextSize       = FS_SM,
+    TextColor3     = C.muted,
+    Size           = UDim2.new(0.45,0,1,0),
+    Position       = UDim2.new(0.55,0,0,0),
+    TextXAlignment = Enum.TextXAlignment.Right,
+    ZIndex         = 103,
+})
+
+local VBAR_H = BTN_H+4+22+4
+local resultsScroll = mkScroll(modal, {
+    Position  = UDim2.fromOffset(8, 44+VBAR_H),
+    Size      = UDim2.new(1,-16,1,-(44+VBAR_H+8)),
+    ZIndex    = 102,
+})
+mkPad(resultsScroll, 4, 4, 4, 4); mkList(resultsScroll, 4)
+
+local noResultsLbl = mkLabel(resultsScroll, {
+    Text           = "No fruits found",
+    Size           = UDim2.new(1,0,0,28),
+    TextSize       = FS_SM,
+    TextColor3     = C.muted,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    ZIndex         = 102,
+})
+
+local function closeModal()
+    modalOpen = false
+    modal.Visible = false; scrim.Visible = false
+    searchBox.Text = ""
+end
+
+local function buildResults(query)
+    for _, c in resultsScroll:GetChildren() do
+        if c:IsA("TextButton") then c:Destroy() end
+    end
+    local q = query:lower():gsub("%s+","")
+    local filtered = currentFruits
+    if filterType then
+        filtered = {}
+        for _, f in currentFruits do
+            if f.itemKey == filterType then table.insert(filtered, f) end
+        end
+    end
+    local results = {}
+    for _, f in filtered do
+        if q == "" or f.label:lower():gsub("%s+",""):find(q,1,true) then
+            table.insert(results, f)
+        end
+    end
+    noResultsLbl.Visible = #results == 0
+    local grand = 0
+    for _, f in results do
+        local v = calcFruitValue(f.itemKey, f.sizeMult, f.mutation, f.decay)
+        if v then grand += v end
+    end
+    valBarTxt.Text = "Total: "..fmtVal(grand)
+    valBarCnt.Text = #results.." fruit"..(#results==1 and "" or "s")
+    for i, fruit in ipairs(results) do
+        local val    = calcFruitValue(fruit.itemKey, fruit.sizeMult, fruit.mutation, fruit.decay)
+        local valTxt = val and ("  "..fmtVal(val)) or ""
+        local row = mkBtn(resultsScroll, {
+            Size             = UDim2.new(1,0,0,BTN_H+2),
+            BackgroundColor3 = C.field,
+            Text             = fruit.label..valTxt,
+            Font             = Enum.Font.Gotham,
+            TextSize         = FS_SM,
+            TextXAlignment   = Enum.TextXAlignment.Left,
+            ZIndex           = 103,
+            LayoutOrder      = i,
+        })
+        mkPad(row, 0, 8, 0, 8)
+        local f2 = fruit
+        connectButton(row, function()
+            selectedFruit = f2; pickBtn.Text = f2.label; closeModal()
+        end)
+    end
+end
+
+local function openModal()
+    if modalOpen then closeModal(); return end
+    if refreshFruits then refreshFruits() end
+    modalOpen = true; modal.Visible = true; scrim.Visible = true
+    buildResults("")
+    if not isMobile then searchBox:CaptureFocus() end
+end
+
+connectButton(scrim,      closeModal)
+connectButton(modalClose, closeModal)
+connectButton(pickBtn,    openModal)
+searchBox:GetPropertyChangedSignal("Text"):Connect(function() buildResults(searchBox.Text) end)
+
+-- type dropdown open
+connectButton(typeBtn, function()
+    if refreshFruits then refreshFruits() end
+    closeTypeDD()
+    local seen, types = {}, {}
+    for _, f in currentFruits do
+        if f.itemKey and not seen[f.itemKey] then seen[f.itemKey]=true; table.insert(types,f.itemKey) end
+    end
+    table.sort(types)
+    if #types == 0 then setStatus("No fruits in inventory.", true); return end
+    local bp    = typeBtn.AbsolutePosition
+    local menuH = math.min((#types+1)*(BTN_H+4)+8, math.floor(SH*0.35))
+    local dropW = typeBtn.AbsoluteSize.X
+    local posY  = bp.Y + typeBtn.AbsoluteSize.Y + 4
+    if posY+menuH > SH-10 then posY = bp.Y - menuH - 4 end
+    typeDropF.Size     = UDim2.fromOffset(dropW, menuH)
+    typeDropF.Position = UDim2.fromOffset(bp.X, posY)
+
+    local allRow = mkBtn(typeDropS, {
+        Size             = UDim2.new(1,0,0,BTN_H),
+        BackgroundColor3 = filterType==nil and C.aDark or C.field,
+        Text             = "All Types",
+        Font             = Enum.Font.Gotham,
+        TextSize         = FS_SM,
+        TextXAlignment   = Enum.TextXAlignment.Left,
+        ZIndex           = 83,
+    }); mkPad(allRow, 0, 8, 0, 8)
+    connectButton(allRow, function() setFilterType(nil); closeTypeDD() end)
+
+    for _, typeName in types do
+        local cnt = 0
+        for _, f in currentFruits do if f.itemKey==typeName then cnt+=1 end end
+        local row = mkBtn(typeDropS, {
+            Size             = UDim2.new(1,0,0,BTN_H),
+            BackgroundColor3 = filterType==typeName and C.aDark or C.field,
+            Text             = ("%s  (%d)"):format(typeName, cnt),
+            Font             = Enum.Font.Gotham,
+            TextSize         = FS_SM,
+            TextXAlignment   = Enum.TextXAlignment.Left,
+            ZIndex           = 83,
+        }); mkPad(row, 0, 8, 0, 8)
+        local tn = typeName
+        connectButton(row, function() setFilterType(tn); closeTypeDD() end)
+    end
+    typeScrim.Visible = true; typeDropF.Visible = true
+end)
+
+-- refreshFruits (now defined)
+refreshFruits = function()
+    currentFruits = getFruits()
+    if #currentFruits == 0 then
+        pickBtn.Text = "No fruits in inventory"; selectedFruit = nil; return
+    end
+    local filtered = currentFruits
+    if filterType then
+        filtered = {}
+        for _, f in currentFruits do
+            if f.itemKey == filterType then table.insert(filtered, f) end
+        end
+    end
+    if #filtered == 0 then
+        pickBtn.Text = "No "..(filterType or "fruits").." found"
+        selectedFruit = nil; return
+    end
+    if selectedFruit then
+        local found = false
+        for _, f in filtered do
+            if f.id == selectedFruit.id then selectedFruit = f; found = true; break end
+        end
+        if not found then selectedFruit = filtered[1] end
+    else
+        selectedFruit = filtered[1]
+    end
+    pickBtn.Text = selectedFruit.label
+end
+
+-- Add one
+local function doAddOneFruit()
+    refreshFruits()
+    if not selectedFruit    then setStatus("No fruit selected.",  true); return end
+    if not selectedFruit.id then setStatus("Fruit has no Id.",    true); return end
+    if #fruitCart >= MAX_FRUIT_CART then setStatus("Cart full ("..MAX_FRUIT_CART..").", true); return end
+    for _, e in fruitCart do
+        if e.id == selectedFruit.id then setStatus("Already in cart.", true); return end
+    end
+    table.insert(fruitCart, {
+        id       = selectedFruit.id,
+        label    = selectedFruit.label,
+        itemKey  = selectedFruit.itemKey,
+        mutation = selectedFruit.mutation,
+        weight   = selectedFruit.weight,
+        sizeMult = selectedFruit.sizeMult,
+        decay    = selectedFruit.decay,
+        isPot    = selectedFruit.isPot,
+    })
+    rebuildFruitCart(); setStatus("Added: "..selectedFruit.label, false)
+end
+connectButton(addOneBtn, doAddOneFruit)
+
+-- Add all
+connectButton(addAllFruitBtn, function()
+    refreshFruits(); local added = 0
+    for _, f in currentFruits do
+        if #fruitCart >= MAX_FRUIT_CART then break end
+        local typeMatch = filterType == nil or f.itemKey == filterType
+        if typeMatch and f.id then
+            local dup = false
+            for _, e in fruitCart do if e.id == f.id then dup=true; break end end
+            if not dup then
+                table.insert(fruitCart, {
+                    id=f.id, label=f.label, itemKey=f.itemKey,
+                    mutation=f.mutation, weight=f.weight,
+                    sizeMult=f.sizeMult, decay=f.decay, isPot=f.isPot,
+                })
+                added += 1
+            end
+        end
+    end
+    rebuildFruitCart()
+    local ts = filterType and (' "'..filterType..'"') or ""
+    setStatus(added>0 and ("Added %d%s fruits"):format(added,ts) or "Nothing new to add.", added==0)
+end)
+connectButton(clearFruitCartBtn, function()
+    table.clear(fruitCart); rebuildFruitCart(); setStatus("Cart cleared.", false)
+end)
+connectButton(refreshFruitBtn, function()
+    refreshFruits(); setStatus("Refreshed — "..#currentFruits.." fruit(s).", false)
+end)
+
+-- Fruit send logic
+local fruitSending = false
+connectButton(sendAllFruitBtn, function()
+    if fruitSending then return end
+    if not resolvedId then
+        if not resolveRecip() then setStatus("Set a recipient first.", true); return end
+    end
+    if #fruitCart == 0 then setStatus("Cart is empty.", true); return end
+
+    local snapshot = {}
+    for _, e in ipairs(fruitCart) do table.insert(snapshot, e) end
+    local chunks = {}
+    for i = 1, #snapshot, SERVER_CHUNK do
+        local chunk = {}
+        for j = i, math.min(i+SERVER_CHUNK-1, #snapshot) do
+            table.insert(chunk, {
+                Category = snapshot[j].isPot and "EmptyPots" or "HarvestedFruits",
+                ItemKey  = snapshot[j].id,
+                Count    = 1,
+            })
+        end
+        table.insert(chunks, chunk)
+    end
+
+    fruitSending = true
+    sendAllFruitBtn.Text             = "Sending..."
+    sendAllFruitBtn.BackgroundColor3 = C.aDark
+    sendAllFruitBtn.Active           = false
+
+    task.spawn(function()
+        local sent, failed = 0, false
+        for i, chunk in ipairs(chunks) do
+            if i > 1 then
+                for cd = BATCH_DELAY, 1, -1 do
+                    if not fruitSending then break end
+                    setStatus(("⏳ Cooldown %ds · Batch %d/%d"):format(cd,i,#chunks), false)
+                    task.wait(1)
+                end
+            end
+            if not fruitSending then
+                setStatus(("Stopped. Sent %d/%d"):format(sent,#snapshot), true); break
+            end
+            setStatus(("Batch %d/%d · sending %d fruit(s)..."):format(i,#chunks,#chunk), false)
+            local ok, success, msg = pcall(function()
+                return Networking.Mailbox.SendBatch:Fire(resolvedId, chunk, "")
+            end)
+            if ok and success then
+                sent += #chunk
+                setStatus(("Batch %d/%d done · %d/%d"):format(i,#chunks,sent,#snapshot), false)
+            else
+                local reason = (not ok and "Remote error")
+                    or (type(msg)=="string" and msg~="" and msg) or "Send failed"
+                setStatus(("Batch %d failed: %s  (%d/%d)"):format(i,reason,sent,#snapshot), true)
+                failed = true; break
+            end
+        end
+        fruitSending = false
+        sendAllFruitBtn.Active           = true
+        sendAllFruitBtn.Text             = "🍎  Send Fruits (auto-batched)"
+        sendAllFruitBtn.BackgroundColor3 = C.orange
+        if sent > 0 then
+            local labels = {}
+            for i = 1, sent do
+                local e = snapshot[i]; if e then table.insert(labels, e.label) end
+            end
+            addHistory(resolvedName, resolvedId, labels, sent, "Fruits")
+            sendWebhook(resolvedName, resolvedId, labels, sent, "Fruits")
+            for _ = 1, sent do table.remove(fruitCart, 1) end
+            rebuildFruitCart()
+        end
+        if not failed then
+            setStatus(("Done! Sent %d fruit(s) to @%s"):format(sent, resolvedName or "?"), false)
+        end
+        refreshFruits()
+    end)
+end)
+
+-- History rebuild (fruits)
+local function rebuildFruitHistory()
+    for _, c in fHistScroll:GetChildren() do if c:IsA("Frame") then c:Destroy() end end
+    -- filter to only Fruits tab entries
+    local fruitsHist = {}
+    for _, e in mailHistory do
+        if e.tab == "Fruits" then table.insert(fruitsHist, e) end
+    end
+    fHistEmpty.Visible = #fruitsHist == 0
+    for i, entry in ipairs(fruitsHist) do
+        local card = Instance.new("Frame")
+        card.BackgroundColor3 = C.histRow
+        card.BorderSizePixel  = 0
+        card.Size             = UDim2.new(1,0,0,0)
+        card.AutomaticSize    = Enum.AutomaticSize.Y
+        card.LayoutOrder      = i
+        card.Parent           = fHistScroll
+        mkCorner(card, 6); mkStroke(card, C.stroke, 1); mkPad(card, 6, 8, 6, 8)
+        mkList(card, 3)
+
+        local hrow = Instance.new("Frame")
+        hrow.BackgroundTransparency = 1
+        hrow.Size        = UDim2.new(1,0,0,16)
+        hrow.LayoutOrder = 1
+        hrow.Parent      = card
+
+        mkLabel(hrow, { Text=fmtTime(entry.time), Size=UDim2.new(0.35,0,1,0), TextSize=FS_SM, TextColor3=C.muted })
+        mkLabel(hrow, {
+            Text     = "→ @"..entry.recipient,
+            Size     = UDim2.new(0.45,0,1,0),
+            Position = UDim2.new(0.35,0,0,0),
+            TextSize = FS_SM,
+            TextColor3 = C.orange,
+            Font     = Enum.Font.GothamBold,
+        })
+        mkLabel(hrow, {
+            Text           = "×"..entry.count,
+            Size           = UDim2.new(0.2,0,1,0),
+            Position       = UDim2.new(0.8,0,0,0),
+            TextSize       = FS_SM,
+            TextColor3     = C.green,
+            Font           = Enum.Font.GothamBold,
+            TextXAlignment = Enum.TextXAlignment.Right,
+        })
+        local MAX_SHOW = 5
+        for j = 1, math.min(#entry.items, MAX_SHOW) do
+            mkLabel(card, {
+                Text         = "  "..entry.items[j],
+                Size         = UDim2.new(1,0,0,14),
+                TextSize     = FS_SM,
+                TextColor3   = C.text,
+                Font         = Enum.Font.Gotham,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+                LayoutOrder  = j+1,
+            })
+        end
+        if #entry.items > MAX_SHOW then
+            mkLabel(card, {
+                Text       = ("  ...+%d more"):format(#entry.items-MAX_SHOW),
+                Size       = UDim2.new(1,0,0,14),
+                TextSize   = FS_SM,
+                TextColor3 = C.muted,
+                Font       = Enum.Font.Gotham,
+                LayoutOrder = MAX_SHOW+2,
+            })
+        end
+    end
+end
+
+connectButton(fClearHistBtn, function()
+    for i = #mailHistory, 1, -1 do
+        if mailHistory[i].tab == "Fruits" then table.remove(mailHistory, i) end
+    end
+    rebuildFruitHistory()
+end)
+
+-- Fruits sub-tab switch
+local currentFruitSub = "send"
+local function switchFruitSub(sub)
+    currentFruitSub = sub
+    fSendPanel.Visible = sub == "send"
+    fHistPanel.Visible = sub == "history"
+    if sub == "send" then
+        fSubSendBtn.BackgroundColor3 = C.tabAct; fSubSendBtn.TextColor3 = C.text
+        fSubHistBtn.BackgroundColor3 = C.field;  fSubHistBtn.TextColor3 = C.muted
+        fruitsSubLine.Position = UDim2.new(0, 4, 1, -2)
+        refreshFruits()
+    else
+        fSubHistBtn.BackgroundColor3 = C.tabAct; fSubHistBtn.TextColor3 = C.text
+        fSubSendBtn.BackgroundColor3 = C.field;  fSubSendBtn.TextColor3 = C.muted
+        fruitsSubLine.Position = UDim2.new(0.5, 4, 1, -2)
+        rebuildFruitHistory()
+    end
+end
+connectButton(fSubSendBtn, function() switchFruitSub("send") end)
+connectButton(fSubHistBtn, function() switchFruitSub("history") end)
+
+-- ════════════════════════════════════════
+-- MAIN TAB SWITCH
+-- ════════════════════════════════════════
+local currentMainTab = "mail"
+
+local function switchMainTab(tab)
+    currentMainTab = tab
+    -- Left content
+    mailTabFrame.Visible   = tab == "mail"
+    fruitsTabFrame.Visible = tab == "fruits"
+
+    -- Right panel: swap between mail cart and fruit cart
+    mailCartHdr.Visible    = tab == "mail"
+    mailCartScroll.Visible = tab == "mail"
+    mailBtnArea.Visible    = tab == "mail"
+
+    fruitCartHdr.Visible    = tab == "fruits"
+    fruitCartScroll.Visible = tab == "fruits"
+    fruitBtnArea.Visible    = tab == "fruits"
+
+    -- Tab button colours
+    if tab == "mail" then
+        tabMailBtn.BackgroundColor3   = C.tabAct; tabMailBtn.TextColor3   = C.text
+        tabFruitsBtn.BackgroundColor3 = C.field;  tabFruitsBtn.TextColor3 = C.muted
+        mainTabLine.Size     = UDim2.new(0.5,-8,0,2)
+        mainTabLine.Position = UDim2.new(0,4,1,-2)
+        switchMailSub(currentMailSub)
+    else
+        tabFruitsBtn.BackgroundColor3 = C.tabAct; tabFruitsBtn.TextColor3 = C.text
+        tabMailBtn.BackgroundColor3   = C.field;  tabMailBtn.TextColor3   = C.muted
+        mainTabLine.Size     = UDim2.new(0.5,-8,0,2)
+        mainTabLine.Position = UDim2.new(0.5,4,1,-2)
+        switchFruitSub(currentFruitSub)
+    end
+end
+
+connectButton(tabMailBtn,   function() switchMainTab("mail")   end)
+connectButton(tabFruitsBtn, function() switchMainTab("fruits") end)
+
+-- ════════════════════════════════════════
+-- MINIMIZE / CLOSE
+-- ════════════════════════════════════════
+local minimized = false
+local savedH    = WIN_H
+
+local function closeAllDropdowns()
+    closeTypeDD()
+    if modalOpen then closeModal() end
+end
+
+local function doMinimize()
+    minimized = not minimized
+    if minimized then
+        savedH = root.AbsoluteSize.Y
+        closeAllDropdowns()
+        leftPanel.Visible  = false
+        rightPanel.Visible = false
+        TweenService:Create(root, TweenInfo.new(0.15), {
+            Size = UDim2.fromOffset(WIN_W, HDR_H + TAB_H)
+        }):Play()
+    else
+        TweenService:Create(root, TweenInfo.new(0.15), {
+            Size = UDim2.fromOffset(WIN_W, savedH)
+        }):Play()
+        task.delay(0.16, function()
+            if not minimized then
+                leftPanel.Visible  = true
+                rightPanel.Visible = true
+            end
+        end)
+    end
+end
+connectButton(minBtn,   doMinimize)
+connectButton(closeBtn, function() closeAllDropdowns(); gui:Destroy() end)
+
+-- ════════════════════════════════════════
+-- KEYBOARD TOGGLE  (RightShift)
+-- ════════════════════════════════════════
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        local v = not root.Visible
+        root.Visible = v
+        if not v then closeAllDropdowns() end
+    end
+end)
+
+-- ════════════════════════════════════════
+-- ON-SCREEN TOGGLE BUTTON
+-- ════════════════════════════════════════
+local toggleBtn = mkBtn(gui, {
+    Size             = UDim2.fromOffset(isMobile and 56 or 72, isMobile and 26 or 30),
+    Position         = UDim2.new(0, 8, 0.5, -15),
+    BackgroundColor3 = C.panel,
+    TextColor3       = C.text,
+    Text             = "Mail",
+    TextSize         = FS_SM,
+    ZIndex           = 200,
+})
+mkStroke(toggleBtn, C.stroke)
+connectButton(toggleBtn, function()
+    local v = not root.Visible
+    root.Visible = v
+    toggleBtn.Text = v and "Hide" or "Mail"
+    if not v then closeAllDropdowns() end
+end)
+
+-- ════════════════════════════════════════
+-- AUTO-WATCH INVENTORY (fruits)
+-- ════════════════════════════════════════
+task.spawn(function()
+    local function watch(c)
+        if not c then return end
+        c.ChildAdded:Connect(function(child)
+            local isFruitItem = child:GetAttribute("Fruit")
+                or (child:GetAttribute("PottedPlant") and child:GetAttribute("HasFruits"))
+            if isFruitItem then task.wait(0.15); refreshFruits() end
+        end)
+        c.ChildRemoved:Connect(function(child)
+            local isFruitItem = child:GetAttribute("Fruit")
+                or (child:GetAttribute("PottedPlant") and child:GetAttribute("HasFruits"))
+            if isFruitItem then
+                task.wait(0.15); refreshFruits()
+                local rid = child:GetAttribute("Id")
+                if rid then
+                    for i = #fruitCart, 1, -1 do
+                        if fruitCart[i].id == rid then table.remove(fruitCart, i) end
+                    end
+                    rebuildFruitCart()
+                end
+            end
+        end)
+    end
+    watch(LocalPlayer:FindFirstChild("Backpack"))
+    if LocalPlayer.Character then watch(LocalPlayer.Character) end
+    LocalPlayer.CharacterAdded:Connect(function(char)
+        task.wait(0.5); watch(char)
+        watch(LocalPlayer:FindFirstChild("Backpack"))
+        refreshFruits()
+    end)
+    refreshFruits(); rebuildFruitCart()
+end)
+
+-- ════════════════════════════════════════
+-- BOOT
+-- ════════════════════════════════════════
+switchMainTab("mail")
+
+print("[UniversalMailSender] Loaded — RightShift or on-screen 'Mail' button to toggle")
+print("  Tabs: Mail (Catalog + Pots, max "..MAX_CATALOG..") | Fruits (HarvestedFruits + FruitPot, cart "..MAX_FRUIT_CART..")")
