@@ -1,0 +1,1753 @@
+    -- ══════════════════════════════════════════════════════════════
+    -- Auto Shovel + Auto Plant + Plant Height ESP  v4.0  |  GAG2
+    -- • Auto plants seed near Super Sprinkler (grid scatter)
+    -- • Auto shovels plants below a height threshold
+    --   (skips plants that have fruit — never destroys a harvest)
+    -- • ESP: BillboardGui above every plant showing height,
+    --   seed name, and fruit indicator — visible across the garden
+    -- ══════════════════════════════════════════════════════════════
+    assert(game:IsLoaded() or game.Loaded:Wait(), "Game failed to load")
+    task.wait(2)
+
+    -- ── Services ──────────────────────────────────────────────────
+    local Players           = game:GetService("Players")
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local CollectionService = game:GetService("CollectionService")
+    local RunService        = game:GetService("RunService")
+    local TweenService      = game:GetService("TweenService")
+    local UserInputService  = game:GetService("UserInputService")
+    local LocalPlayer       = Players.LocalPlayer
+
+    -- ── Clean up old UI ───────────────────────────────────────────
+    do
+        local ok, h = pcall(gethui)
+        local gui = (ok and h) or LocalPlayer:FindFirstChild("PlayerGui")
+        if gui then
+            for _, name in {"AutoShovelUI", "AutoShovelPlantUI", "AutoShovelESPUI"} do
+                local old = gui:FindFirstChild(name)
+                if old then old:Destroy() end
+            end
+        end
+    end
+
+    -- ── Networking ────────────────────────────────────────────────
+    local Networking
+    do
+        for _ = 1, 10 do
+            local ok, r = pcall(function()
+                return require(ReplicatedStorage
+                    :WaitForChild("SharedModules", 8)
+                    :WaitForChild("Networking", 8))
+            end)
+            if ok and r then Networking = r; break end
+            task.wait(1)
+        end
+        if not Networking then warn("[AutoShovel] Networking failed — aborting"); return end
+    end
+
+    -- ── Gardens ───────────────────────────────────────────────────
+    local Gardens
+    do
+        for _ = 1, 30 do
+            Gardens = workspace:FindFirstChild("Gardens")
+            if Gardens then break end
+            task.wait(1)
+        end
+        if not Gardens then warn("[AutoShovel] Gardens not found — aborting"); return end
+    end
+
+    -- ── Character ─────────────────────────────────────────────────
+    local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    LocalPlayer.CharacterAdded:Connect(function(c) Character = c end)
+
+    -- ══════════════════════════════════════════════════════════════
+    -- CONFIG
+    -- ══════════════════════════════════════════════════════════════
+    local CFG = {
+        -- Auto Plant
+        PlantEnabled      = false,
+        SeedAttr          = "Bamboo",
+        PlantDelay        = 0.05,
+        PlantRadius       = 26,
+        PlantGridStep     = 2,
+        MinPlantGap       = 1,
+        TargetSprinkler   = "Super Sprinkler",
+        SprinklerFolders  = {"Sprinklers", "Sprinkler"},
+        -- Auto Place Sprinkler
+        AutoPlaceSprinkler   = false,
+        SprinklerToolAttr    = "Super Sprinkler",
+        SprinklerPlaceCooldown = 2.0,
+
+        -- Auto Shovel
+        HeightThreshold = 500,
+        ShovelDelay     = 0.35,
+        ShovelEnabled   = false,
+
+        -- ESP
+        ESPEnabled      = false,
+        ESPAllGardens   = false,
+    }
+
+    -- ══════════════════════════════════════════════════════════════
+    -- STATE
+    -- ══════════════════════════════════════════════════════════════
+    local State = {
+        CurrentAction  = "Idle",
+        -- Plant
+        PlantStatus    = "Idle",
+        PlantsPlanted  = 0,
+        PlantSprinkler = "none",
+        PlantSpots     = 0,
+        -- Sprinkler placement
+        SprinklerStatus   = "—",
+        SprinklersPlaced  = 0,
+        -- Shovel
+        ShovelStatus   = "Idle",
+        PlantsDetected = 0,
+        PlantsShoved   = 0,
+        SystemStatus   = "Ready",
+    }
+
+    local function setStatus(msg) State.SystemStatus = msg end
+
+    -- ══════════════════════════════════════════════════════════════
+    -- UTILITY
+    -- ══════════════════════════════════════════════════════════════
+    local function getPlot()
+        local id = LocalPlayer:GetAttribute("PlotId")
+        if not id then return nil end
+        return Gardens:FindFirstChild("Plot" .. tostring(id))
+    end
+
+-- Returns the plant's current height in CENTIMETRES (same unit as MaxAge).
+-- Age attribute = current height in cm, set continuously by PlantVisualizerController.
+-- MaxAge attribute = final height in cm (from SeedData.MaxAge).
+-- Falls back to bounding box if neither attr exists yet.
+local function getPlantHeight(plant)
+    -- Age is the live cm value — this is what the game uses directly
+    local age = tonumber(plant:GetAttribute("Age"))
+    if age then return age end  -- cm
+
+    -- Bounding box fallback (convert studs → cm, 1 stud ≈ 28 cm)
+    local ok, _, sz = pcall(function() return plant:GetBoundingBox() end)
+    if ok and sz then return math.floor(sz.Y * 28) end
+
+    return nil
+end
+
+-- Convert cm to feet for display
+local function cmToFt(cm)
+    return cm / 30.48
+end
+
+    local function plantHasFruit(plant)
+        if plant:GetAttribute("FruitReady") == true then return true end
+        local fa = plant:GetAttribute("Fruit")
+        if fa ~= nil and fa ~= "" and fa ~= false then return true end
+        for _, d in plant:GetDescendants() do
+            if CollectionService:HasTag(d, "Fruit") then return true end
+            if d:GetAttribute("Fruit")     ~= nil then return true end
+            if d:GetAttribute("FruitName") ~= nil then return true end
+        end
+        return false
+    end
+
+    local function unequipAll()
+        if not Character then return end
+        local bp = LocalPlayer:FindFirstChild("Backpack")
+        if not bp then return end
+        for _, t in Character:GetChildren() do
+            if t:IsA("Tool") then pcall(function() t.Parent = bp end) end
+        end
+        for _ = 1, 10 do
+            task.wait(0.05)
+            if not Character:FindFirstChildOfClass("Tool") then break end
+        end
+        task.wait(0.1)
+    end
+
+    local function equipTool(attrKey, attrVal)
+        if Character then
+            for _, t in Character:GetChildren() do
+                if t:IsA("Tool") and t:GetAttribute(attrKey) == attrVal then return t end
+            end
+        end
+        local bp = LocalPlayer:FindFirstChild("Backpack")
+        if not bp then return nil end
+        for _, t in bp:GetChildren() do
+            if t:IsA("Tool") and t:GetAttribute(attrKey) == attrVal then
+                local ok = pcall(function() t.Parent = Character end)
+                if ok then
+                    for _ = 1, 10 do
+                        task.wait(0.05)
+                        if Character and Character:FindFirstChild(t.Name) then return t end
+                    end
+                end
+                break
+            end
+        end
+        return nil
+    end
+
+    -- ══════════════════════════════════════════════════════════════
+    -- AUTO PLANT  (grid scatter around Super Sprinkler)
+    -- Adapted from GardenHub concept: reads SprinklerName attribute,
+    -- builds a shuffled grid of valid PlantArea spots within radius,
+    -- then rapid-fires PlantSeed one spot at a time.
+    -- ══════════════════════════════════════════════════════════════
+
+    -- ── Sprinkler detection ───────────────────────────────────────
+    local function normText(t) return t:lower():gsub("[%s_%-]","") end
+
+    -- Returns position, name-string, instance of the nearest Super Sprinkler
+    -- Searches plot descendants broadly: checks Sprinkler attr, SprinklerName attr,
+    -- and name match — covers both folder-based and flat placements
+    local function findSuperSprinkler(plot)
+        if not plot then return nil, nil, nil end
+        local target = normText(CFG.TargetSprinkler)
+        local best, bestDist, bestPos = nil, math.huge, nil
+        local hrp = Character and Character:FindFirstChild("HumanoidRootPart")
+        local ref = hrp and hrp.Position or Vector3.new(0,0,0)
+
+        for _, desc in plot:GetDescendants() do
+            if desc:IsA("Model") or desc:IsA("BasePart") then
+                -- Try all three attribute patterns the game uses
+                local name = desc:GetAttribute("Sprinkler")
+                          or desc:GetAttribute("SprinklerName")
+                          or (desc:IsA("Model") and desc.Name)
+                if name and normText(tostring(name)) == target then
+                    local pos
+                    if desc:IsA("Model") then
+                        if desc.PrimaryPart then
+                            pos = desc.PrimaryPart.Position
+                        else
+                            for _, d in desc:GetDescendants() do
+                                if d:IsA("BasePart") then pos = d.Position; break end
+                            end
+                        end
+                    else
+                        pos = desc.Position
+                    end
+                    if pos then
+                        local dist = (pos - ref).Magnitude
+                        if dist < bestDist then
+                            bestDist = dist
+                            best     = desc
+                            bestPos  = pos
+                        end
+                    end
+                end
+            end
+        end
+
+        if best then
+            return bestPos, tostring(best:GetAttribute("Sprinkler")
+                                  or best:GetAttribute("SprinklerName")
+                                  or best.Name), best
+        end
+        return nil, nil, nil
+    end
+
+    -- ── Auto Place Sprinkler ──────────────────────────────────────
+    -- Finds the sprinkler tool in backpack, raycasts a PlantArea ground
+    -- position, then fires Networking.Place.PlaceSprinkler.
+    local P_lastPlaceAttempt  = 0
+    local P_savedSprinklerPos = nil   -- manually saved placement position
+
+    -- Find sprinkler tool in backpack first, then character (backpack is most likely)
+    local function findSprinklerTool()
+        local target = CFG.SprinklerToolAttr
+        -- Backpack first
+        local bp = LocalPlayer:FindFirstChild("Backpack")
+        if bp then
+            for _, t in bp:GetChildren() do
+                if t:IsA("Tool") and t:GetAttribute("Sprinkler") == target then
+                    return t
+                end
+            end
+        end
+        -- Then character
+        if Character then
+            for _, t in Character:GetChildren() do
+                if t:IsA("Tool") and t:GetAttribute("Sprinkler") == target then
+                    return t
+                end
+            end
+        end
+        return nil
+    end
+
+    -- Equip sprinkler by name — mirrors AutoWateringCan's equipSprinklerTool exactly
+    local function equipSprinklerTool(sprinklerName)
+        -- Already held?
+        if Character then
+            for _, t in Character:GetChildren() do
+                if t:IsA("Tool") and t:GetAttribute("Sprinkler") == sprinklerName then
+                    return t
+                end
+            end
+        end
+        -- Move from backpack
+        local bp = LocalPlayer:FindFirstChild("Backpack")
+        if not bp then return nil end
+        for _, t in bp:GetChildren() do
+            if t:IsA("Tool") and t:GetAttribute("Sprinkler") == sprinklerName then
+                local ok = pcall(function() t.Parent = Character end)
+                if ok then
+                    for _ = 1, 6 do
+                        task.wait(0.05)
+                        if Character and Character:FindFirstChild(t.Name) then
+                            return t
+                        end
+                    end
+                end
+                break
+            end
+        end
+        return nil
+    end
+
+    -- Raycast a valid PlantArea ground position inside the plot
+    local function getPlantAreaPlacePos(plot)
+        if not plot then return nil end
+        local parts = {}
+        for _, d in plot:GetDescendants() do
+            if d:IsA("BasePart") and CollectionService:HasTag(d, "PlantArea") then
+                table.insert(parts, d)
+            end
+        end
+        if #parts == 0 then return nil end
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Include
+        params.FilterDescendantsInstances = parts
+        for _, part in ipairs(parts) do
+            local origin = part.Position + Vector3.new(0, 50, 0)
+            local result = workspace:Raycast(origin, Vector3.new(0, -200, 0), params)
+            if result and CollectionService:HasTag(result.Instance, "PlantArea") then
+                return result.Position
+            end
+        end
+        return parts[1].Position
+    end
+
+    -- Returns true if the sprinkler was fired successfully
+    local function placeSprinkler()
+        local now = os.clock()
+        if now - P_lastPlaceAttempt < CFG.SprinklerPlaceCooldown then return false end
+        P_lastPlaceAttempt = now
+
+        if not Networking or not Networking.Place or not Networking.Place.PlaceSprinkler then
+            State.SprinklerStatus = "❌ PlaceSprinkler remote not found"
+            return false
+        end
+
+        local plot = getPlot()
+        if not plot then
+            State.SprinklerStatus = "❌ No plot"
+            return false
+        end
+
+        local plotId = tonumber(plot.Name:match("%d+"))
+        if not plotId then
+            State.SprinklerStatus = "❌ Bad plot ID"
+            return false
+        end
+
+        local pos = getPlantAreaPlacePos(plot)
+        if not pos then
+            State.SprinklerStatus = "❌ No PlantArea found"
+            return false
+        end
+
+        local tool = findSprinklerTool()
+        if not tool then
+            State.SprinklerStatus = "❌ No '"..CFG.SprinklerToolAttr.."' in backpack"
+            return false
+        end
+
+        State.SprinklerStatus = "🌀 Placing sprinkler..."
+        State.CurrentAction   = "PlacingSprinkler"
+        setStatus("🌀 Placing sprinkler...")
+
+        unequipAll()
+        task.wait(0.2)
+
+        -- equipSprinklerTool takes the NAME string, matches AutoWateringCan pattern
+        local tool = equipSprinklerTool(CFG.SprinklerToolAttr)
+        if not tool then
+            State.SprinklerStatus = "❌ Could not equip '"..CFG.SprinklerToolAttr.."'"
+            State.CurrentAction   = "Idle"
+            return false
+        end
+
+        -- Wait for server to replicate the equip before firing the remote
+        task.wait(0.4)
+
+        -- Confirm tool is still in Character right before firing
+        local heldTool = Character and Character:FindFirstChild(tool.Name)
+        if not heldTool then
+            State.SprinklerStatus = "❌ Tool lost before fire — retry"
+            State.CurrentAction   = "Idle"
+            return false
+        end
+
+        -- Signature: (position, sprinklerName, tool, plotId)
+        local ok, err = pcall(function()
+            Networking.Place.PlaceSprinkler:Fire(pos, CFG.SprinklerToolAttr, heldTool, plotId)
+        end)
+
+        task.wait(0.5)
+        unequipAll()
+        State.CurrentAction = "Idle"
+
+        if ok then
+            State.SprinklersPlaced += 1
+            State.SprinklerStatus = "✅ Fired #"..State.SprinklersPlaced.." (check plot)"
+            setStatus("✅ PlaceSprinkler fired — watching plot...")
+            return true
+        else
+            warn("[AutoPlace] PlaceSprinkler fire error: "..tostring(err))
+            State.SprinklerStatus = "⚠️ Fire error — check console"
+            return false
+        end
+    end
+
+    -- ── PlantArea helpers ─────────────────────────────────────────
+    local function getPlantAreas(plot)        local areas = {}
+        for _, part in ipairs(CollectionService:GetTagged("PlantArea")) do
+            if part:IsDescendantOf(plot) then table.insert(areas, part) end
+        end
+        if #areas == 0 then
+            for _, inst in plot:GetDescendants() do
+                if inst:IsA("BasePart") then
+                    local n = inst.Name:lower()
+                    if n=="plantarea" or n=="dirt" or n=="soil" or n=="farm" or n=="plot" then
+                        table.insert(areas, inst)
+                    end
+                end
+            end
+        end
+        return areas
+    end
+
+    local function getOccupiedXZ(plot)
+        local occ = {}
+        local plants = plot:FindFirstChild("Plants")
+        if not plants then return occ end
+        for _, plant in plants:GetChildren() do
+            local part = plant:IsA("Model") and (plant.PrimaryPart or plant:FindFirstChildWhichIsA("BasePart",true))
+                    or (plant:IsA("BasePart") and plant)
+            if part then table.insert(occ, Vector2.new(part.Position.X, part.Position.Z)) end
+        end
+        return occ
+    end
+
+    local function isSpotFree(pos, occupied)
+        local v = Vector2.new(pos.X, pos.Z)
+        for _, o in ipairs(occupied) do
+            if (v-o).Magnitude < CFG.MinPlantGap then return false end
+        end
+        return true
+    end
+
+    local function makePlantsParams()
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Include
+        local folders = {}
+        for _, plot in Gardens:GetChildren() do
+            local p = plot:FindFirstChild("Plants")
+            if p then table.insert(folders, p) end
+        end
+        params.FilterDescendantsInstances = folders
+        return params
+    end
+
+    -- ── Spot queue ────────────────────────────────────────────────
+    local P_spotQueue     = {}  -- Vector3 positions ready to plant
+    local P_trackedInst   = nil -- currently tracked sprinkler Instance
+    local P_lastTick      = 0
+
+    local function shuffleInPlace(t)
+        for i = #t, 2, -1 do
+            local j = math.random(1,i); t[i],t[j] = t[j],t[i]
+        end
+    end
+
+    local function rebuildSpotQueue()
+        P_spotQueue = {}
+        local plot = getPlot()
+        if not plot then State.PlantSprinkler = "none"; return end
+
+        local anchorPos, anchorName, sprInst = findSuperSprinkler(plot)
+        if not anchorPos then
+            State.PlantSprinkler = "none"
+            P_trackedInst = nil
+            return
+        end
+        State.PlantSprinkler = anchorName
+        P_trackedInst = sprInst
+
+        local areas = getPlantAreas(plot)
+        if #areas == 0 then return end
+
+        local areaParams = RaycastParams.new()
+        areaParams.FilterType = Enum.RaycastFilterType.Include
+        areaParams.FilterDescendantsInstances = areas
+        local plantsParams = makePlantsParams()
+        local occupied = getOccupiedXZ(plot)
+        local anchorXZ = Vector2.new(anchorPos.X, anchorPos.Z)
+        local step     = CFG.PlantGridStep
+        local radius   = CFG.PlantRadius
+
+        for _, area in ipairs(areas) do
+            local sz = area.Size
+            local cf = area.CFrame
+            local hx, hz = sz.X*0.5, sz.Z*0.5
+            for x = -hx+step*0.5, hx, step do
+                for z = -hz+step*0.5, hz, step do
+                    local sample = (cf * CFrame.new(x, sz.Y*0.5+8, z)).Position
+                    if (Vector2.new(sample.X,sample.Z)-anchorXZ).Magnitude <= radius then
+                        -- Raycast onto PlantArea surface
+                        local hit = workspace:Raycast(sample, Vector3.new(0,-500,0), areaParams)
+                        if hit and hit.Instance:IsDescendantOf(plot) then
+                            -- Check no existing plant is too close
+                            local plantHit = workspace:Raycast(sample, Vector3.new(0,-500,0), plantsParams)
+                            local plantPos = hit.Position
+                            local clear = true
+                            if plantHit then
+                                local a2 = Vector2.new(plantPos.X,plantPos.Z)
+                                local p2 = Vector2.new(plantHit.Position.X,plantHit.Position.Z)
+                                if (p2-a2).Magnitude < CFG.MinPlantGap then clear = false end
+                            end
+                            if clear and isSpotFree(plantPos, occupied) then
+                                table.insert(P_spotQueue, plantPos)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        shuffleInPlace(P_spotQueue)
+        State.PlantSpots = #P_spotQueue
+    end
+
+    -- ── Seed tool helpers ─────────────────────────────────────────
+    -- Find seed tool by SeedTool attribute — checks Backpack first, then Character
+    local function findSeedTool()
+        local seedLower = CFG.SeedAttr:lower()
+        -- Scan a container for the matching seed tool
+        local function scan(c)
+            if not c then return nil, nil end
+            for _, t in c:GetChildren() do
+                if t:IsA("Tool") then
+                    local attr = t:GetAttribute("SeedTool")
+                    if attr and attr:lower() == seedLower then
+                        return t, attr
+                    end
+                    -- fallback: tool name contains seed name
+                    if t.Name:lower():find(seedLower, 1, true) then
+                        return t, attr or CFG.SeedAttr
+                    end
+                end
+            end
+            return nil, nil
+        end
+        -- Backpack first (most common location)
+        local bp = LocalPlayer:FindFirstChild("Backpack")
+        local t, a = scan(bp)
+        if t then return t, a end
+        -- Then check if already equipped in Character
+        return scan(Character)
+    end
+
+    -- Equip seed tool: move from Backpack → Character directly,
+    -- then confirm it arrived. Falls back to Humanoid:EquipTool.
+    local function equipSeedTool(tool)
+        if not tool then return nil end
+        if not Character then return nil end
+
+        -- Already in Character — nothing to do
+        if tool.Parent == Character then return tool end
+
+        -- Move from Backpack to Character directly
+        local ok = pcall(function() tool.Parent = Character end)
+        if ok then
+            -- Wait up to 0.3s for it to confirm
+            for _ = 1, 6 do
+                task.wait(0.05)
+                if tool.Parent == Character then return tool end
+            end
+        end
+
+        -- Fallback: Humanoid:EquipTool
+        local hum = Character:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function() hum:EquipTool(tool) end)
+            task.wait(0.1)
+        end
+
+        return Character:FindFirstChildWhichIsA("Tool")
+    end
+
+    -- ── Plant tick (called from Heartbeat) ───────────────────────
+    -- Track whether we were just paused due to missing sprinkler
+    local P_waitingForSprinkler = false
+
+    local function plantTick()
+        if not CFG.PlantEnabled then return end
+        if State.CurrentAction ~= "Idle" then return end
+        local now = os.clock()
+        if now - P_lastTick < CFG.PlantDelay then return end
+
+        local plot = getPlot()
+        if not plot then State.PlantStatus = "❌ No plot"; return end
+
+        -- Confirm / refresh sprinkler
+        local _, _, sprInst = findSuperSprinkler(plot)
+        if not sprInst then
+            P_trackedInst = nil
+            P_spotQueue   = {}
+
+            -- First tick without sprinkler: unequip seed immediately
+            if not P_waitingForSprinkler then
+                P_waitingForSprinkler = true
+                unequipAll()
+                if CFG.AutoPlaceSprinkler then
+                    State.PlantStatus = "🌀 Sprinkler gone — placing new one..."
+                else
+                    State.PlantStatus = "⏸ Sprinkler gone — unequipped, waiting..."
+                end
+            else
+                if CFG.AutoPlaceSprinkler then
+                    State.PlantStatus = "🌀 Placing sprinkler..."
+                else
+                    State.PlantStatus = "⏸ Waiting for sprinkler..."
+                end
+            end
+
+            -- Auto-place: fire in a separate thread so Heartbeat isn't blocked
+            if CFG.AutoPlaceSprinkler and State.CurrentAction == "Idle" then
+                task.spawn(function()
+                    local placed = placeSprinkler()
+                    if placed then
+                        -- Wait up to 5s for sprinkler to appear in plot
+                        local deadline = os.clock() + 5
+                        while os.clock() < deadline do
+                            task.wait(0.25)
+                            local p = getPlot()
+                            if p then
+                                local _, _, newInst = findSuperSprinkler(p)
+                                if newInst then
+                                    P_waitingForSprinkler = false
+                                    P_trackedInst = nil  -- force queue rebuild
+                                    State.PlantStatus = "✅ Sprinkler placed — resuming"
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end)
+            end
+            return
+        end
+
+        -- Sprinkler is back — clear waiting flag and rebuild queue
+        if P_waitingForSprinkler then
+            P_waitingForSprinkler = false
+            P_trackedInst = nil
+            State.PlantStatus = "✅ Sprinkler detected — resuming"
+        end
+
+        if sprInst ~= P_trackedInst then
+            P_trackedInst = sprInst
+            rebuildSpotQueue()
+        end
+
+        -- Find seed tool
+        local tool, seedAttr = findSeedTool()
+        if not tool or not seedAttr then
+            State.PlantStatus = "❌ No '"..CFG.SeedAttr.."' seed in backpack"
+            return
+        end
+        -- Equip and get the live Character-held reference
+        local equippedTool = equipSeedTool(tool)
+        if not equippedTool then
+            State.PlantStatus = "❌ Failed to equip '"..CFG.SeedAttr.."'"
+            return
+        end
+        tool = equippedTool
+
+        -- Refill queue if empty
+        if #P_spotQueue == 0 then
+            rebuildSpotQueue()
+            if #P_spotQueue == 0 then
+                State.PlantStatus = "✅ Plot full — rescanning..."
+                return
+            end
+        end
+
+        -- Pop a spot and fire
+        local idx = math.random(1, #P_spotQueue)
+        local pos = table.remove(P_spotQueue, idx)
+        State.PlantSpots = #P_spotQueue
+
+        State.CurrentAction = "Planting"
+        local ok, err = pcall(function()
+            Networking.Plant.PlantSeed:Fire(pos, seedAttr, tool)
+        end)
+        P_lastTick = now
+
+        if ok then
+            State.PlantsPlanted += 1
+            State.PlantStatus = string.format("🌱 Planted #%d  (%s)", State.PlantsPlanted, CFG.SeedAttr)
+        else
+            State.PlantStatus = "⚠️ PlantSeed: "..tostring(err)
+        end
+        State.CurrentAction = "Idle"
+    end
+
+    -- Watch for PlotId changes → rebuild queue
+    LocalPlayer:GetAttributeChangedSignal("PlotId"):Connect(function()
+        P_trackedInst = nil
+        rebuildSpotQueue()
+    end)
+
+    -- Initial queue build
+    task.defer(rebuildSpotQueue)
+
+    -- ══════════════════════════════════════════════════════════════
+    -- ESP  — BillboardGui above each plant
+    -- ══════════════════════════════════════════════════════════════
+
+    -- Table mapping plant → its BillboardGui so we can update / remove them
+    local espTags = {}   -- [plant] = { bb, nameLbl, hLbl }
+
+    -- Height is now in cm. HeightThreshold is also in cm.
+    -- Colour bands: below threshold = red, below 2× = amber, above = green
+    local function heightColor(ageCm, threshold)
+        if ageCm == nil     then return Color3.fromRGB(140, 140, 160) end
+        if ageCm < threshold   then return Color3.fromRGB(239,  68,  68) end
+        if ageCm < threshold*2 then return Color3.fromRGB(255, 180,  55) end
+        return Color3.fromRGB(52, 211, 153)
+    end
+
+    -- Build one BillboardGui — TEXT ONLY, no background frame.
+    -- Two stroked TextLabels stacked: seed name (white) + height (colour-coded).
+    -- Stroke gives the black outline that makes text pop against any background.
+    local function createESPTag(plant)
+        if espTags[plant] then return end
+
+        local adornee = plant.PrimaryPart
+        if not adornee then
+            for _, d in plant:GetDescendants() do
+                if d:IsA("BasePart") then adornee = d; break end
+            end
+        end
+        if not adornee then return end
+
+        local bb = Instance.new("BillboardGui")
+        bb.Name         = "PlantESP"
+        bb.Adornee      = adornee
+        bb.Size         = UDim2.new(0, 120, 0, 44)
+        bb.StudsOffset  = Vector3.new(0, 4, 0)
+        bb.AlwaysOnTop  = true
+        bb.MaxDistance  = 250
+        bb.ResetOnSpawn = false
+        bb.LightInfluence = 0
+
+        -- Line 1: seed name — bold white with black stroke
+        local nameLbl = Instance.new("TextLabel", bb)
+        nameLbl.Name                  = "NameLbl"
+        nameLbl.Size                  = UDim2.new(1, 0, 0, 20)
+        nameLbl.Position              = UDim2.new(0, 0, 0, 0)
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.Text                  = plant:GetAttribute("SeedName") or plant.Name
+        nameLbl.TextColor3            = Color3.new(1, 1, 1)
+        nameLbl.TextSize              = 14
+        nameLbl.Font                  = Enum.Font.GothamBold
+        nameLbl.TextXAlignment        = Enum.TextXAlignment.Center
+        nameLbl.TextTruncate          = Enum.TextTruncate.AtEnd
+        local ns = Instance.new("UIStroke", nameLbl)
+        ns.Color = Color3.new(0, 0, 0); ns.Thickness = 2
+
+        -- Line 2: height — coloured with black stroke
+        local hLbl = Instance.new("TextLabel", bb)
+        hLbl.Name                  = "HeightLbl"
+        hLbl.Size                  = UDim2.new(1, 0, 0, 20)
+        hLbl.Position              = UDim2.new(0, 0, 0, 22)
+        hLbl.BackgroundTransparency = 1
+        hLbl.Text                  = "h: —"
+        hLbl.TextColor3            = Color3.fromRGB(200, 200, 210)
+        hLbl.TextSize              = 13
+        hLbl.Font                  = Enum.Font.GothamBold
+        hLbl.TextXAlignment        = Enum.TextXAlignment.Center
+        local hs = Instance.new("UIStroke", hLbl)
+        hs.Color = Color3.new(0, 0, 0); hs.Thickness = 2
+
+        bb.Parent = adornee
+        espTags[plant] = { bb = bb, nameLbl = nameLbl, hLbl = hLbl }
+    end
+
+    local function removeESPTag(plant)
+        local tag = espTags[plant]
+        if tag then
+            pcall(function() tag.bb:Destroy() end)
+            espTags[plant] = nil
+        end
+    end
+
+    local function updateESPTag(plant)
+        local tag = espTags[plant]
+        if not tag then return end
+
+        local ageCm  = getPlantHeight(plant)   -- current cm (= Age attr)
+        local maxCm  = tonumber(plant:GetAttribute("MaxAge"))
+        local hasFruit = plantHasFruit(plant)
+        local col    = heightColor(ageCm, CFG.HeightThreshold)
+
+        -- Display as feet: "12.3 / 73.3 ft"
+        local hText
+        if ageCm and maxCm and maxCm > 0 then
+            local curFt = cmToFt(ageCm)
+            local maxFt = cmToFt(maxCm)
+            hText = string.format("%.1f / %.1f ft", curFt, maxFt)
+        elseif ageCm then
+            hText = string.format("%.1f ft", cmToFt(ageCm))
+        else
+            hText = "— ft"
+        end
+
+        if hasFruit then hText = hText .. " 🍎" end
+        tag.hLbl.Text       = hText
+        tag.hLbl.TextColor3 = col
+
+        -- Seed name refresh
+        tag.nameLbl.Text = plant:GetAttribute("SeedName") or plant.Name
+    end
+
+    -- Scan gardens and create/remove ESP tags as needed
+    local function refreshESP()
+        if not CFG.ESPEnabled then
+            -- Remove all tags
+            for plant in pairs(espTags) do removeESPTag(plant) end
+            return
+        end
+
+        local plotsToScan = {}
+        if CFG.ESPAllGardens then
+            for _, plot in Gardens:GetChildren() do
+                table.insert(plotsToScan, plot)
+            end
+        else
+            local plot = getPlot()
+            if plot then table.insert(plotsToScan, plot) end
+        end
+
+        -- Build a set of all current valid plants
+        local livePlants = {}
+        for _, plot in ipairs(plotsToScan) do
+            local folder = plot:FindFirstChild("Plants")
+            if folder then
+                for _, plant in folder:GetChildren() do
+                    if plant:IsA("Model") then
+                        livePlants[plant] = true
+                    end
+                end
+            end
+        end
+
+        -- Create tags for new plants
+        for plant in pairs(livePlants) do
+            if not espTags[plant] then
+                createESPTag(plant)
+            end
+            updateESPTag(plant)
+        end
+
+        -- Remove tags for plants that are gone
+        for plant in pairs(espTags) do
+            if not livePlants[plant] then
+                removeESPTag(plant)
+            end
+        end
+    end
+
+    -- Continuous ESP update loop (runs every 0.5 s)
+    task.spawn(function()
+        while true do
+            task.wait(0.5)
+            local ok, err = pcall(refreshESP)
+            if not ok then warn("[ESP] " .. tostring(err)) end
+        end
+    end)
+
+    -- ══════════════════════════════════════════════════════════════
+    -- AUTO SHOVEL
+    -- ══════════════════════════════════════════════════════════════
+    local function getPlantsToShovel(plot)
+        local result = {}
+        local folder = plot and plot:FindFirstChild("Plants")
+        if not folder then return result end
+        for _, plant in folder:GetChildren() do
+            if plant:IsA("Model") then
+                local h = getPlantHeight(plant)
+                if h ~= nil and h < CFG.HeightThreshold and not plantHasFruit(plant) then
+                    table.insert(result, plant)
+                end
+            end
+        end
+        return result
+    end
+
+    local function stopShovel()
+        CFG.ShovelEnabled  = false
+        State.ShovelStatus = "⏹ Stopped"
+        setStatus("⏹ Auto Shovel stopped")
+    end
+
+    local lastShovelTick = 0
+
+    RunService.Heartbeat:Connect(function()
+        if not CFG.ShovelEnabled then return end
+        if State.CurrentAction ~= "Idle" then return end
+
+        local now = os.clock()
+        if now - lastShovelTick < CFG.ShovelDelay then return end
+
+        local plot = getPlot()
+        if not plot then
+            State.ShovelStatus  = "❌ No plot found"
+            State.PlantsDetected = 0
+            return
+        end
+
+        -- Update detected count (all plants, not just shovelable)
+        local folder = plot:FindFirstChild("Plants")
+        State.PlantsDetected = folder and #folder:GetChildren() or 0
+
+        local targets = getPlantsToShovel(plot)
+
+        if #targets == 0 then
+            -- Check if any are being held back because of fruit
+            local skipped = 0
+            if folder then
+                for _, plant in folder:GetChildren() do
+                    if plant:IsA("Model") then
+                        local h = getPlantHeight(plant)
+                        if h ~= nil and h < CFG.HeightThreshold and plantHasFruit(plant) then
+                            skipped += 1
+                        end
+                    end
+                end
+            end
+            if skipped > 0 then
+                State.ShovelStatus = "🍎 " .. skipped .. " skipped (has fruit)"
+            else
+                State.ShovelStatus = "✅ No targets below " .. CFG.HeightThreshold
+            end
+            return
+        end
+
+        -- Claim lock
+        State.CurrentAction = "Shoveling"
+        lastShovelTick      = now
+
+        unequipAll()
+
+        -- Find shovel tool (boolean or any non-nil Shovel attr)
+        local tool = equipTool("Shovel", true)
+        if not tool then
+            for _, src in {Character, LocalPlayer:FindFirstChild("Backpack")} do
+                if src then
+                    for _, t in src:GetChildren() do
+                        if t:IsA("Tool") and t:GetAttribute("Shovel") ~= nil then
+                            tool = t; break
+                        end
+                    end
+                end
+                if tool then break end
+            end
+        end
+
+        if not tool then
+            State.ShovelStatus  = "❌ No shovel in backpack"
+            setStatus("❌ No shovel available")
+            State.CurrentAction = "Idle"
+            return
+        end
+
+        local plant    = targets[1]
+        if not plant or not plant.Parent then
+            unequipAll(); State.CurrentAction = "Idle"; return
+        end
+
+        local height   = getPlantHeight(plant)
+        local plantId  = plant:GetAttribute("PlantId") or plant:GetAttribute("Id") or plant.Name
+        local seedName = plant:GetAttribute("SeedName") or "unknown"
+        local hStr     = height and tostring(math.floor(height)) or "?"
+
+        State.ShovelStatus = string.format("⛏ %s  h:%s", seedName, hStr)
+        setStatus(State.ShovelStatus)
+
+        -- Equip via Humanoid so server sees the tool as held
+        local hum = Character and Character:FindFirstChildOfClass("Humanoid")
+        if hum then pcall(function() hum:EquipTool(tool) end); task.wait(0.15) end
+
+        -- Re-grab equipped tool reference after equip settle
+        local activeTool = (Character and Character:FindFirstChildWhichIsA("Tool")) or tool
+        local shovelAttr = activeTool:GetAttribute("Shovel")
+
+        -- Confirmed GAG2 pattern: (id, typeString, toolInstance)
+        -- matches PlantSeed: Fire(position, seedType, tool)
+        -- and WateringCan:   Fire(position, canType, tool)
+        local fired = false
+        local ok, err = pcall(function()
+            Networking.Shovel.UseShovel:Fire(plantId, shovelAttr, activeTool)
+        end)
+
+        if ok then
+            fired = true
+        else
+            warn("[AutoShovel] primary sig failed: "..tostring(err).." — trying id-only")
+            -- Fallback: some server versions only need the plantId
+            local ok2, err2 = pcall(function()
+                Networking.Shovel.UseShovel:Fire(plantId)
+            end)
+            if ok2 then
+                fired = true
+            else
+                warn("[AutoShovel] fallback also failed: "..tostring(err2))
+            end
+        end
+
+        if fired then
+            State.PlantsShoved += 1
+            State.ShovelStatus = string.format("✅ Shoveled %s #%d  h:%s",
+                seedName, State.PlantsShoved, hStr)
+            setStatus(State.ShovelStatus)
+        else
+            State.ShovelStatus = "⚠️ Fire failed — check console"
+            setStatus(State.ShovelStatus)
+        end
+
+        unequipAll()
+        State.CurrentAction = "Idle"
+    end)
+
+    -- Plant tick runs on the same Heartbeat, gated by CFG.PlantEnabled
+    RunService.Heartbeat:Connect(plantTick)
+
+    -- ══════════════════════════════════════════════════════════════
+    -- GUI
+    -- ══════════════════════════════════════════════════════════════
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name           = "AutoShovelESPUI"
+    ScreenGui.ResetOnSpawn   = false
+    ScreenGui.DisplayOrder   = 999
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    do
+        local ok, h = pcall(gethui)
+        ScreenGui.Parent = (ok and h) or LocalPlayer:WaitForChild("PlayerGui")
+    end
+
+    local C = {
+        BG      = Color3.fromRGB(10,  11,  16),
+        Panel   = Color3.fromRGB(18,  20,  30),
+        Card    = Color3.fromRGB(25,  27,  40),
+        CardHov = Color3.fromRGB(32,  35,  52),
+        TitleBG = Color3.fromRGB(13,  14,  22),
+        Input   = Color3.fromRGB(20,  22,  34),
+        Border  = Color3.fromRGB(40,  44,  66),
+        Accent  = Color3.fromRGB(255, 180,  55),
+        AccentH = Color3.fromRGB(230, 155,  30),
+        AccentDk= Color3.fromRGB(175, 105,  15),
+        Green   = Color3.fromRGB(52,  211, 153),
+        Red     = Color3.fromRGB(239,  68,  68),
+        Blue    = Color3.fromRGB(80,  160, 255),
+        TextPri = Color3.fromRGB(235, 236, 248),
+        TextSec = Color3.fromRGB(145, 150, 185),
+        TextMut = Color3.fromRGB(88,   94, 130),
+        TglOn   = Color3.fromRGB(52,  211, 153),
+        TglOff  = Color3.fromRGB(42,  46,  68),
+        White   = Color3.fromRGB(255, 255, 255),
+        Divider = Color3.fromRGB(30,  33,  50),
+        NavAct  = Color3.fromRGB(28,  30,  48),
+        NavHov  = Color3.fromRGB(22,  24,  38),
+        Sidebar = Color3.fromRGB(14,  15,  24),
+    }
+
+    local WIN_W, WIN_H = 480, 460
+
+    local function Rnd(i, r)
+        local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = i
+    end
+    local function Stk(i, col, t)
+        local s = Instance.new("UIStroke"); s.Color = col or C.Border
+        s.Thickness = t or 1; s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = i
+    end
+    local function Frm(p, sz, pos, bg)
+        local f = Instance.new("Frame"); f.Size = sz; f.Position = pos
+        f.BackgroundColor3 = bg or C.BG; f.BorderSizePixel = 0; f.Parent = p; return f
+    end
+    local function Lbl(p, txt, sz, pos, col, fs, bold)
+        local l = Instance.new("TextLabel"); l.Size = sz; l.Position = pos
+        l.BackgroundTransparency = 1; l.Text = txt; l.TextColor3 = col or C.TextPri
+        l.TextSize = fs or 13; l.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.TextTruncate = Enum.TextTruncate.AtEnd; l.Parent = p; return l
+    end
+    local function TweenBG(i, col, d)
+        TweenService:Create(i, TweenInfo.new(d or 0.15), {BackgroundColor3 = col}):Play()
+    end
+
+    -- Window
+    local Win = Frm(ScreenGui,
+        UDim2.new(0, WIN_W, 0, WIN_H),
+        UDim2.new(0.5, -WIN_W/2, 0.5, -WIN_H/2), C.BG)
+    Win.Name = "Window"; Rnd(Win, 10); Stk(Win, C.Accent, 1.5)
+
+    -- Title bar
+    local TBar = Frm(Win, UDim2.new(1,0,0,46), UDim2.new(0,0,0,0), C.TitleBG)
+    Rnd(TBar, 10); Frm(TBar, UDim2.new(1,0,0,12), UDim2.new(0,0,1,-12), C.TitleBG)
+    Lbl(TBar, "⛏  Auto Shovel + Auto Plant + ESP",
+        UDim2.new(1,-100,0,26), UDim2.new(0,12,0,0),  C.Accent, 15, true)
+    Lbl(TBar, "v4.0  |  GAG2",
+        UDim2.new(1,-100,0,18), UDim2.new(0,12,0,26), C.TextSec, 11, false)
+
+    local function TBtn(txt, xOff, bg, cb)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0,26,0,26); b.Position = UDim2.new(1,xOff,0.5,-13)
+        b.BackgroundColor3 = bg; b.BorderSizePixel = 0; b.Text = txt
+        b.TextColor3 = C.White; b.TextSize = 13; b.Font = Enum.Font.GothamBold
+        b.AutoButtonColor = false; b.Parent = TBar; Rnd(b,6)
+        if cb then b.MouseButton1Click:Connect(cb) end
+        return b
+    end
+    TBtn("✕", -32, C.Red,   function() ScreenGui:Destroy() end)
+    local MinBtn = TBtn("─", -62, C.Input, nil)
+
+    -- Drag
+    local drag, ds, ws = false, nil, nil
+    TBar.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            drag = true; ds = i.Position; ws = Win.Position
+        end
+    end)
+    TBar.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if drag and i.UserInputType == Enum.UserInputType.MouseMovement then
+            local d = i.Position - ds
+            Win.Position = UDim2.new(ws.X.Scale, ws.X.Offset+d.X, ws.Y.Scale, ws.Y.Offset+d.Y)
+        end
+    end)
+
+    -- Sidebar + content
+    local SIDE_W = 150
+    local Body = Frm(Win, UDim2.new(1,0,1,-46), UDim2.new(0,0,0,46), C.BG)
+    Body.Name = "Body"
+
+    local Sidebar = Frm(Body, UDim2.new(0,SIDE_W,1,0), UDim2.new(0,0,0,0), C.Sidebar)
+    Frm(Body, UDim2.new(0,1,1,0), UDim2.new(0,SIDE_W,0,0), C.Divider)
+    local CH = Frm(Body, UDim2.new(1,-SIDE_W-1,1,0), UDim2.new(0,SIDE_W+1,0,0), C.BG)
+
+    local sL = Instance.new("UIListLayout"); sL.SortOrder = Enum.SortOrder.LayoutOrder
+    sL.Padding = UDim.new(0,3); sL.Parent = Sidebar
+    local sP = Instance.new("UIPadding")
+    sP.PaddingTop = UDim.new(0,8); sP.PaddingLeft = UDim.new(0,8)
+    sP.PaddingRight = UDim.new(0,8); sP.PaddingBottom = UDim.new(0,8); sP.Parent = Sidebar
+
+    local bodyVis = true
+    MinBtn.MouseButton1Click:Connect(function()
+        bodyVis = not bodyVis
+        Body.Visible = bodyVis
+        Win.Size = bodyVis and UDim2.new(0,WIN_W,0,WIN_H) or UDim2.new(0,WIN_W,0,46)
+        -- Transform between hide (─) and show (▲) glyphs
+        MinBtn.Text = bodyVis and "─" or "▲"
+        TweenBG(MinBtn, bodyVis and C.Input or C.Green)
+    end)
+
+    -- ── Page system ───────────────────────────────────────────────
+    local pages, navBtns, activePage = {}, {}, nil
+
+    local function ShowPage(name)
+        for n, f in pairs(pages)   do f.Visible = (n == name) end
+        for n, b in pairs(navBtns) do
+            if n == name then
+                b.BackgroundTransparency = 0
+                TweenBG(b, C.NavAct); b.TextColor3 = C.Accent
+            else
+                TweenBG(b, C.Sidebar)
+                b.BackgroundTransparency = 1; b.TextColor3 = C.TextSec
+            end
+        end
+        activePage = name
+    end
+
+    local function MakePage(name)
+        local sf = Instance.new("ScrollingFrame"); sf.Name = "P_"..name
+        sf.Size = UDim2.new(1,0,1,0); sf.BackgroundTransparency = 1
+        sf.BorderSizePixel = 0; sf.ScrollBarThickness = 3
+        sf.ScrollBarImageColor3 = C.Accent
+        sf.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        sf.CanvasSize = UDim2.new(0,0,0,0); sf.Visible = false; sf.Parent = CH
+        local pad = Instance.new("UIPadding")
+        pad.PaddingTop = UDim.new(0,10); pad.PaddingBottom = UDim.new(0,10)
+        pad.PaddingLeft = UDim.new(0,10); pad.PaddingRight = UDim.new(0,10); pad.Parent = sf
+        local list = Instance.new("UIListLayout")
+        list.SortOrder = Enum.SortOrder.LayoutOrder
+        list.Padding = UDim.new(0,6); list.Parent = sf
+        pages[name] = sf; return sf
+    end
+
+    local navOrder = 0
+    local function NavBtn(icon, label, pName)
+        navOrder += 1
+        local b = Instance.new("TextButton"); b.Size = UDim2.new(1,0,0,36)
+        b.BackgroundColor3 = C.NavAct; b.BackgroundTransparency = 1; b.BorderSizePixel = 0
+        b.Text = icon.."  "..label; b.TextColor3 = C.TextSec; b.TextSize = 12
+        b.Font = Enum.Font.GothamBold; b.TextXAlignment = Enum.TextXAlignment.Left
+        b.AutoButtonColor = false; b.LayoutOrder = navOrder; b.Parent = Sidebar; Rnd(b,6)
+        local p2 = Instance.new("UIPadding"); p2.PaddingLeft = UDim.new(0,8); p2.Parent = b
+        b.MouseEnter:Connect(function()
+            if activePage ~= pName then
+                b.BackgroundTransparency = 0; TweenBG(b, C.NavHov)
+            end
+        end)
+        b.MouseLeave:Connect(function()
+            if activePage ~= pName then b.BackgroundTransparency = 1 end
+        end)
+        b.MouseButton1Click:Connect(function() ShowPage(pName) end)
+        navBtns[pName] = b; return b
+    end
+
+    -- ── Shared row builders ───────────────────────────────────────
+    local function SecHdr(parent, txt, order)
+        local f = Frm(parent, UDim2.new(1,0,0,22), UDim2.new(0,0,0,0), C.TitleBG)
+        f.LayoutOrder = order; Rnd(f,5)
+        Lbl(f, "  "..txt, UDim2.new(1,0,1,0), UDim2.new(0,0,0,0), C.Accent, 11, true)
+        return f
+    end
+
+    local function InfoRow(parent, txt, order)
+        local f = Frm(parent, UDim2.new(1,0,0,28), UDim2.new(0,0,0,0), C.Card)
+        f.LayoutOrder = order; Rnd(f,7)
+        local l = Lbl(f, "  "..txt, UDim2.new(1,-8,1,0), UDim2.new(0,0,0,0), C.TextSec, 12, false)
+        return f, l
+    end
+
+    local function StatusRow(parent, order)
+        local f = Frm(parent, UDim2.new(1,0,0,30), UDim2.new(0,0,0,0), C.Card)
+        f.LayoutOrder = order; Rnd(f,7)
+        local dot = Frm(f, UDim2.new(0,8,0,8), UDim2.new(0,10,0.5,-4), C.TglOff); Rnd(dot,4)
+        local lbl = Lbl(f, "Idle", UDim2.new(1,-28,1,0), UDim2.new(0,26,0,0), C.TextSec, 12, false)
+        return f, dot, lbl
+    end
+
+    -- Toggle row — returns (frame, setter function)
+    local function ToggleRow(parent, label, order, onCb)
+        local f = Frm(parent, UDim2.new(1,0,0,34), UDim2.new(0,0,0,0), C.Card)
+        f.LayoutOrder = order; Rnd(f,7)
+        Lbl(f, "  "..label, UDim2.new(0.58,0,1,0), UDim2.new(0,0,0,0), C.TextSec, 12, false)
+        local track = Instance.new("TextButton"); track.Size = UDim2.new(0,46,0,24)
+        track.Position = UDim2.new(1,-52,0.5,-12); track.BackgroundColor3 = C.TglOff
+        track.BorderSizePixel = 0; track.Text = ""; track.AutoButtonColor = false
+        track.Parent = f; Rnd(track,12)
+        local knob = Frm(track, UDim2.new(0,20,0,20), UDim2.new(0,2,0.5,-10), C.White); Rnd(knob,10)
+        local st = false
+        local function set(v)
+            st = v; TweenBG(track, st and C.TglOn or C.TglOff)
+            TweenService:Create(knob, TweenInfo.new(0.18), {
+                Position = st and UDim2.new(0,24,0.5,-10) or UDim2.new(0,2,0.5,-10)
+            }):Play()
+            if onCb then onCb(st) end
+        end
+        track.MouseButton1Click:Connect(function() set(not st) end)
+        return f, set
+    end
+
+    local function NumRow(parent, label, default, order, minVal, cb)
+        local f = Frm(parent, UDim2.new(1,0,0,34), UDim2.new(0,0,0,0), C.Card)
+        f.LayoutOrder = order; Rnd(f,7)
+        Lbl(f, "  "..label, UDim2.new(0.56,0,1,0), UDim2.new(0,0,0,0), C.TextSec, 12, false)
+        local box = Instance.new("TextBox"); box.Size = UDim2.new(0.40,0,0,22)
+        box.Position = UDim2.new(0.58,0,0.5,-11); box.BackgroundColor3 = C.Input
+        box.BorderSizePixel = 0; box.Text = tostring(default); box.TextColor3 = C.TextPri
+        box.TextSize = 13; box.Font = Enum.Font.Gotham; box.ClearTextOnFocus = false
+        box.Parent = f; Rnd(box,5); Stk(box, C.Border)
+        box.FocusLost:Connect(function()
+            local n = tonumber(box.Text)
+            if n and n >= (minVal or 0) then box.Text = tostring(n); if cb then cb(n) end
+            else box.Text = tostring(default) end
+        end)
+        return f
+    end
+
+    -- ══════════════════════════════════════════════════════════════
+    -- PAGE: STATUS
+    -- ══════════════════════════════════════════════════════════════
+    NavBtn("📊", "Status", "Status")
+    local pSt = MakePage("Status")
+    do
+        local o = 0; local function n() o+=1; return o end
+
+        SecHdr(pSt, "Auto Plant", n())
+        local _, pltDot, pltLbl   = StatusRow(pSt, n())
+        local _, pltCountLbl       = InfoRow(pSt, "Plants planted: 0", n())
+        local _, pltSpotsLbl       = InfoRow(pSt, "Spots in queue: 0", n())
+        local _, pltSprLbl         = InfoRow(pSt, "Sprinkler: none", n())
+
+        SecHdr(pSt, "Auto Shovel", n())
+        local _, shvDot, shvLbl   = StatusRow(pSt, n())
+        local _, detLbl            = InfoRow(pSt, "Plants detected: 0", n())
+        local _, shovedLbl         = InfoRow(pSt, "Plants shoveled: 0", n())
+
+        SecHdr(pSt, "Plant ESP", n())
+        local _, espDot, espLbl   = StatusRow(pSt, n())
+        local _, espCountLbl       = InfoRow(pSt, "ESP tags active: 0", n())
+
+        -- Status bar at bottom of window
+        local SBar = Frm(Win, UDim2.new(1,0,0,20), UDim2.new(0,0,1,-20), C.TitleBG)
+        SBar.ZIndex = 5
+        local sbL = Lbl(SBar, "  Ready", UDim2.new(1,-8,1,0), UDim2.new(0,0,0,0), C.TextSec, 11, false)
+        sbL.ZIndex = 6
+
+        RunService.Heartbeat:Connect(function()
+            -- Plant
+            pltDot.BackgroundColor3 = CFG.PlantEnabled and C.TglOn or C.TglOff
+            pltLbl.Text = "Plant: "..State.PlantStatus
+            pltLbl.TextColor3 = CFG.PlantEnabled and C.TextPri or C.TextSec
+            pltCountLbl.Text = "  Plants planted: "..State.PlantsPlanted
+            pltSpotsLbl.Text = "  Spots in queue: "..State.PlantSpots
+            pltSprLbl.Text   = "  Sprinkler: "..State.PlantSprinkler
+
+            -- Shovel
+            shvDot.BackgroundColor3 = CFG.ShovelEnabled and C.TglOn or C.TglOff
+            shvLbl.Text = "Shovel: "..State.ShovelStatus
+            shvLbl.TextColor3 = CFG.ShovelEnabled and C.TextPri or C.TextSec
+            detLbl.Text   = "  Plants detected: "..State.PlantsDetected
+            shovedLbl.Text = "  Plants shoveled: "..State.PlantsShoved
+
+            -- ESP
+            local espCount = 0
+            for _ in pairs(espTags) do espCount += 1 end
+            espDot.BackgroundColor3 = CFG.ESPEnabled and C.TglOn or C.TglOff
+            espLbl.Text = "ESP: "..(CFG.ESPEnabled and "Active ("..espCount.." tags)" or "Off")
+            espLbl.TextColor3 = CFG.ESPEnabled and C.TextPri or C.TextSec
+            espCountLbl.Text = "  ESP tags active: "..espCount
+
+            sbL.Text = "  "..State.SystemStatus
+            sbL.TextColor3 = (State.CurrentAction ~= "Idle") and C.Accent or C.TextSec
+        end)
+    end
+
+    -- ══════════════════════════════════════════════════════════════
+    -- PAGE: AUTO PLANT
+    -- ══════════════════════════════════════════════════════════════
+    NavBtn("🌱", "Auto Plant", "Plant")
+    local pPlt = MakePage("Plant")
+    do
+        local o = 0; local function n() o+=1; return o end
+
+        SecHdr(pPlt, "Status", n())
+        local _, pDot, pLbl    = StatusRow(pPlt, n())
+        local _, pCountLbl      = InfoRow(pPlt, "Plants planted: 0", n())
+        local _, pSpotsLbl      = InfoRow(pPlt, "Spots in queue: 0", n())
+        local _, pSprLbl        = InfoRow(pPlt, "Sprinkler: none",   n())
+
+        SecHdr(pPlt, "Control", n())
+        ToggleRow(pPlt, "Enable Auto Plant", n(), function(on)
+            CFG.PlantEnabled = on
+            if on then
+                State.PlantStatus = "🟢 Running..."
+                setStatus("🌱 Auto Plant enabled")
+                rebuildSpotQueue()
+            else
+                CFG.PlantEnabled  = false
+                State.PlantStatus = "⏹ Stopped"
+                setStatus("⏹ Auto Plant stopped")
+            end
+        end)
+
+        -- Rescan button
+        local rsBtn = Instance.new("TextButton")
+        rsBtn.Size = UDim2.new(1,0,0,30); rsBtn.LayoutOrder = n()
+        rsBtn.BackgroundColor3 = C.Panel; rsBtn.BorderSizePixel = 0
+        rsBtn.Text = "🔄  Rescan Spots"; rsBtn.TextColor3 = C.TextSec
+        rsBtn.TextSize = 12; rsBtn.Font = Enum.Font.Gotham
+        rsBtn.AutoButtonColor = false; rsBtn.Parent = pPlt; Rnd(rsBtn,7)
+        rsBtn.MouseEnter:Connect(function() TweenBG(rsBtn, C.CardHov) end)
+        rsBtn.MouseLeave:Connect(function() TweenBG(rsBtn, C.Panel) end)
+        rsBtn.MouseButton1Click:Connect(function()
+            P_trackedInst = nil; rebuildSpotQueue()
+            setStatus("🔄 Spots rescanned: "..State.PlantSpots)
+        end)
+
+        -- Reset counter
+        local rcBtn = Instance.new("TextButton")
+        rcBtn.Size = UDim2.new(1,0,0,30); rcBtn.LayoutOrder = n()
+        rcBtn.BackgroundColor3 = C.Panel; rcBtn.BorderSizePixel = 0
+        rcBtn.Text = "🔄  Reset Counter"; rcBtn.TextColor3 = C.TextSec
+        rcBtn.TextSize = 12; rcBtn.Font = Enum.Font.Gotham
+        rcBtn.AutoButtonColor = false; rcBtn.Parent = pPlt; Rnd(rcBtn,7)
+        rcBtn.MouseEnter:Connect(function() TweenBG(rcBtn, C.CardHov) end)
+        rcBtn.MouseLeave:Connect(function() TweenBG(rcBtn, C.Panel) end)
+        rcBtn.MouseButton1Click:Connect(function()
+            State.PlantsPlanted = 0; setStatus("🔄 Plant counter reset")
+        end)
+
+        SecHdr(pPlt, "Settings", n())
+
+        -- Seed name input
+        local seedRow = Frm(pPlt, UDim2.new(1,0,0,34), UDim2.new(0,0,0,0), C.Card)
+        seedRow.LayoutOrder = n(); Rnd(seedRow,7)
+        Lbl(seedRow, "  Seed Name (SeedTool attr)",
+            UDim2.new(0.52,0,1,0), UDim2.new(0,0,0,0), C.TextSec, 12, false)
+        local seedBox = Instance.new("TextBox")
+        seedBox.Size = UDim2.new(0.44,0,0,22); seedBox.Position = UDim2.new(0.54,0,0.5,-11)
+        seedBox.BackgroundColor3 = C.Input; seedBox.BorderSizePixel = 0
+        seedBox.Text = CFG.SeedAttr; seedBox.TextColor3 = C.TextPri
+        seedBox.TextSize = 12; seedBox.Font = Enum.Font.Gotham
+        seedBox.ClearTextOnFocus = false; seedBox.Parent = seedRow
+        Rnd(seedBox,5); Stk(seedBox, C.Border)
+        seedBox.FocusLost:Connect(function()
+            if seedBox.Text ~= "" then
+                CFG.SeedAttr = seedBox.Text
+                P_trackedInst = nil; rebuildSpotQueue()
+            else seedBox.Text = CFG.SeedAttr end
+        end)
+
+        -- Sprinkler name input
+        local sprRow = Frm(pPlt, UDim2.new(1,0,0,34), UDim2.new(0,0,0,0), C.Card)
+        sprRow.LayoutOrder = n(); Rnd(sprRow,7)
+        Lbl(sprRow, "  Target Sprinkler",
+            UDim2.new(0.52,0,1,0), UDim2.new(0,0,0,0), C.TextSec, 12, false)
+        local sprBox = Instance.new("TextBox")
+        sprBox.Size = UDim2.new(0.44,0,0,22); sprBox.Position = UDim2.new(0.54,0,0.5,-11)
+        sprBox.BackgroundColor3 = C.Input; sprBox.BorderSizePixel = 0
+        sprBox.Text = CFG.TargetSprinkler; sprBox.TextColor3 = C.TextPri
+        sprBox.TextSize = 11; sprBox.Font = Enum.Font.Gotham
+        sprBox.ClearTextOnFocus = false; sprBox.Parent = sprRow
+        Rnd(sprBox,5); Stk(sprBox, C.Border)
+        sprBox.FocusLost:Connect(function()
+            if sprBox.Text ~= "" then
+                CFG.TargetSprinkler = sprBox.Text
+                P_trackedInst = nil; rebuildSpotQueue()
+            else sprBox.Text = CFG.TargetSprinkler end
+        end)
+
+        NumRow(pPlt, "Plant Delay (s)",    CFG.PlantDelay,    n(), 0,   function(v) CFG.PlantDelay    = math.max(0, v) end)
+        NumRow(pPlt, "Radius (studs)",     CFG.PlantRadius,   n(), 1,   function(v) CFG.PlantRadius   = v; P_trackedInst = nil; rebuildSpotQueue() end)
+        NumRow(pPlt, "Grid Step (studs)",  CFG.PlantGridStep, n(), 0.5, function(v) CFG.PlantGridStep = v; P_trackedInst = nil; rebuildSpotQueue() end)
+        NumRow(pPlt, "Min Plant Gap",      CFG.MinPlantGap,   n(), 0.5, function(v) CFG.MinPlantGap   = v end)
+
+        -- ── Auto Place Sprinkler section ───────────────────────────
+        SecHdr(pPlt, "Auto Place Sprinkler", n())
+
+        -- Status rows
+        local _, sprDot, sprLbl    = StatusRow(pPlt, n())
+        local _, sprPlacedLbl      = InfoRow(pPlt,   "Sprinklers placed: 0", n())
+
+        -- Toggle
+        ToggleRow(pPlt, "Auto Place Sprinkler", n(), function(on)
+            CFG.AutoPlaceSprinkler = on
+            setStatus(on and "🌀 Auto Place Sprinkler ON" or "🌀 Auto Place Sprinkler OFF")
+        end)
+
+        -- Sprinkler tool name input
+        local stRow = Frm(pPlt, UDim2.new(1,0,0,34), UDim2.new(0,0,0,0), C.Card)
+        stRow.LayoutOrder = n(); Rnd(stRow,7)
+        Lbl(stRow, "  Sprinkler Tool (attr)",
+            UDim2.new(0.50,0,1,0), UDim2.new(0,0,0,0), C.TextSec, 12, false)
+        local stBox = Instance.new("TextBox")
+        stBox.Size = UDim2.new(0.46,0,0,22); stBox.Position = UDim2.new(0.52,0,0.5,-11)
+        stBox.BackgroundColor3 = C.Input; stBox.BorderSizePixel = 0
+        stBox.Text = CFG.SprinklerToolAttr; stBox.TextColor3 = C.TextPri
+        stBox.TextSize = 11; stBox.Font = Enum.Font.Gotham
+        stBox.ClearTextOnFocus = false; stBox.Parent = stRow
+        Rnd(stBox,5); Stk(stBox, C.Border)
+        stBox.FocusLost:Connect(function()
+            if stBox.Text ~= "" then CFG.SprinklerToolAttr = stBox.Text
+            else stBox.Text = CFG.SprinklerToolAttr end
+        end)
+
+        NumRow(pPlt, "Place Cooldown (s)", CFG.SprinklerPlaceCooldown, n(), 0.5,
+            function(v) CFG.SprinklerPlaceCooldown = v end)
+
+        -- Manual place button
+        local mpBtn = Instance.new("TextButton")
+        mpBtn.Size = UDim2.new(1,0,0,30); mpBtn.LayoutOrder = n()
+        mpBtn.BackgroundColor3 = C.Blue; mpBtn.BorderSizePixel = 0
+        mpBtn.Text = "🌀  Place Sprinkler Now"; mpBtn.TextColor3 = C.White
+        mpBtn.TextSize = 12; mpBtn.Font = Enum.Font.GothamBold
+        mpBtn.AutoButtonColor = false; mpBtn.Parent = pPlt; Rnd(mpBtn,7)
+        mpBtn.MouseEnter:Connect(function() TweenBG(mpBtn, Color3.fromRGB(55,130,220)) end)
+        mpBtn.MouseLeave:Connect(function() TweenBG(mpBtn, C.Blue) end)
+        mpBtn.MouseButton1Click:Connect(function()
+            -- Reset cooldown so manual clicks always fire immediately
+            P_lastPlaceAttempt = 0
+            if State.CurrentAction ~= "Idle" then
+                State.CurrentAction = "Idle"
+            end
+            task.spawn(placeSprinkler)
+        end)
+
+        -- Debug: dump sprinkler tool attrs + plot sprinkler models to console
+        local dbgSprBtn = Instance.new("TextButton")
+        dbgSprBtn.Size = UDim2.new(1,0,0,28); dbgSprBtn.LayoutOrder = n()
+        dbgSprBtn.BackgroundColor3 = C.Panel; dbgSprBtn.BorderSizePixel = 0
+        dbgSprBtn.Text = "🔍  Debug: Print Sprinkler Info"; dbgSprBtn.TextColor3 = C.Blue
+        dbgSprBtn.TextSize = 11; dbgSprBtn.Font = Enum.Font.Gotham
+        dbgSprBtn.AutoButtonColor = false; dbgSprBtn.Parent = pPlt; Rnd(dbgSprBtn,7)
+        dbgSprBtn.MouseEnter:Connect(function() TweenBG(dbgSprBtn, C.CardHov) end)
+        dbgSprBtn.MouseLeave:Connect(function() TweenBG(dbgSprBtn, C.Panel) end)
+        dbgSprBtn.MouseButton1Click:Connect(function()
+            print("=== [AutoShovel] SPRINKLER DEBUG ===")
+
+            -- 1. Backpack sprinkler tools
+            print("-- Backpack Tools with Sprinkler attr:")
+            local bp = LocalPlayer:FindFirstChild("Backpack")
+            if bp then
+                for _, t in bp:GetChildren() do
+                    if t:IsA("Tool") then
+                        local a = t:GetAttribute("Sprinkler")
+                        if a ~= nil then
+                            print(string.format("  Tool='%s'  Sprinkler='%s'", t.Name, tostring(a)))
+                        end
+                    end
+                end
+            end
+
+            -- 2. Placed sprinkler models in plot
+            local plot = getPlot()
+            print("-- Plot descendants that look like sprinklers:")
+            if plot then
+                for _, d in plot:GetDescendants() do
+                    local sprAttr = d:GetAttribute("Sprinkler")
+                    local snAttr  = d:GetAttribute("SprinklerName")
+                    if sprAttr ~= nil or snAttr ~= nil then
+                        print(string.format("  [%s] Name='%s'  Sprinkler='%s'  SprinklerName='%s'",
+                            d.ClassName, d.Name,
+                            tostring(sprAttr), tostring(snAttr)))
+                    end
+                end
+            else
+                print("  No plot found!")
+            end
+
+            -- 3. Current findSuperSprinkler result
+            local pos, name, inst = findSuperSprinkler(plot)
+            if inst then
+                print(string.format("-- findSuperSprinkler → found '%s' at %s", name, tostring(pos)))
+            else
+                print("-- findSuperSprinkler → NOT FOUND (target='"..CFG.TargetSprinkler.."')")
+            end
+
+            -- 4. Networking.Place check
+            if Networking and Networking.Place and Networking.Place.PlaceSprinkler then
+                print("-- Networking.Place.PlaceSprinkler: ✅ found")
+            else
+                print("-- Networking.Place.PlaceSprinkler: ❌ NOT FOUND")
+            end
+
+            print("=== END DEBUG ===")
+            setStatus("🔍 Debug printed to console")
+        end)
+
+        -- Info card
+        local ic = Frm(pPlt, UDim2.new(1,0,0,64), UDim2.new(0,0,0,0), C.Card)
+        ic.LayoutOrder = n(); Rnd(ic,7)
+        Lbl(ic, "  Reads SprinklerName attr from Sprinklers folder.",
+            UDim2.new(1,0,0,16), UDim2.new(0,0,0,4),  C.TextSec, 11, false)
+        Lbl(ic, "  Seeds are fired at grid spots inside radius.",
+            UDim2.new(1,0,0,16), UDim2.new(0,0,0,20), C.TextSec, 11, false)
+        Lbl(ic, "  Sprinkler gone → unequip seed → place → resume.",
+            UDim2.new(1,0,0,16), UDim2.new(0,0,0,36), C.Green,   11, false)
+        Lbl(ic, "  Shovel + Plant + Place share an action lock.",
+            UDim2.new(1,0,0,16), UDim2.new(0,0,0,50), C.TextMut, 11, false)
+
+        RunService.Heartbeat:Connect(function()
+            pDot.BackgroundColor3 = CFG.PlantEnabled and C.TglOn or C.TglOff
+            pLbl.Text = "Status: "..State.PlantStatus
+            pLbl.TextColor3 = CFG.PlantEnabled and C.TextPri or C.TextSec
+            pCountLbl.Text = "  Plants planted: "..State.PlantsPlanted
+            pSpotsLbl.Text = "  Spots in queue: "..State.PlantSpots
+            pSprLbl.Text   = "  Sprinkler: "..State.PlantSprinkler
+
+            -- Sprinkler placement status
+            local sprOn = CFG.AutoPlaceSprinkler
+            sprDot.BackgroundColor3 = sprOn and C.TglOn or C.TglOff
+            sprLbl.Text = "Sprinkler: "..State.SprinklerStatus
+            sprLbl.TextColor3 = sprOn and C.TextPri or C.TextSec
+            sprPlacedLbl.Text = "  Sprinklers placed: "..State.SprinklersPlaced
+        end)
+    end
+
+    -- ══════════════════════════════════════════════════════════════
+    -- PAGE: AUTO SHOVEL
+    -- ══════════════════════════════════════════════════════════════
+    NavBtn("⛏", "Auto Shovel", "Shovel")
+    local pShv = MakePage("Shovel")
+    do
+        local o = 0; local function n() o+=1; return o end
+
+        SecHdr(pShv, "Status", n())
+        local _, shvDot2, shvLbl2 = StatusRow(pShv, n())
+        local _, det2Lbl           = InfoRow(pShv, "Plants detected: 0", n())
+        local _, shoved2Lbl        = InfoRow(pShv, "Plants shoveled: 0", n())
+
+        SecHdr(pShv, "Control", n())
+        ToggleRow(pShv, "Enable Auto Shovel", n(), function(on)
+            CFG.ShovelEnabled = on
+            if on then
+                State.ShovelStatus = "🟢 Running..."
+                setStatus("⛏ Auto Shovel enabled")
+            else
+                stopShovel()
+            end
+        end)
+
+        -- Reset counter
+        local rBtn = Instance.new("TextButton")
+        rBtn.Size = UDim2.new(1,0,0,30); rBtn.LayoutOrder = n()
+        rBtn.BackgroundColor3 = C.Panel; rBtn.BorderSizePixel = 0
+        rBtn.Text = "🔄  Reset Counter"; rBtn.TextColor3 = C.TextSec
+        rBtn.TextSize = 12; rBtn.Font = Enum.Font.Gotham
+        rBtn.AutoButtonColor = false; rBtn.Parent = pShv; Rnd(rBtn,7)
+        rBtn.MouseEnter:Connect(function() TweenBG(rBtn, C.CardHov) end)
+        rBtn.MouseLeave:Connect(function() TweenBG(rBtn, C.Panel) end)
+        rBtn.MouseButton1Click:Connect(function()
+            State.PlantsShoved = 0; setStatus("🔄 Counter reset")
+        end)
+
+        SecHdr(pShv, "Settings", n())
+        NumRow(pShv, "Height Threshold (cm)", CFG.HeightThreshold, n(), 1, function(v)
+            CFG.HeightThreshold = math.floor(v)
+            setStatus("🔧 Threshold → "..CFG.HeightThreshold.." cm ("..string.format("%.1f",CFG.HeightThreshold/30.48).." ft)")
+        end)
+        NumRow(pShv, "Shovel Delay (s)", CFG.ShovelDelay, n(), 0.05, function(v)
+            CFG.ShovelDelay = v
+        end)
+
+        -- Debug: print shovel tool attributes to console
+        local dbgBtn = Instance.new("TextButton")
+        dbgBtn.Size = UDim2.new(1,0,0,30); dbgBtn.LayoutOrder = n()
+        dbgBtn.BackgroundColor3 = C.Panel; dbgBtn.BorderSizePixel = 0
+        dbgBtn.Text = "🔍  Print Shovel Tool Attrs"; dbgBtn.TextColor3 = C.Blue
+        dbgBtn.TextSize = 12; dbgBtn.Font = Enum.Font.Gotham
+        dbgBtn.AutoButtonColor = false; dbgBtn.Parent = pShv; Rnd(dbgBtn,7)
+        dbgBtn.MouseEnter:Connect(function() TweenBG(dbgBtn, C.CardHov) end)
+        dbgBtn.MouseLeave:Connect(function() TweenBG(dbgBtn, C.Panel) end)
+        dbgBtn.MouseButton1Click:Connect(function()
+            local found = false
+            for _, src in {Character, LocalPlayer:FindFirstChild("Backpack")} do
+                if src then
+                    for _, t in src:GetChildren() do
+                        if t:IsA("Tool") and t:GetAttribute("Shovel") ~= nil then
+                            print("[AutoShovel] Tool:", t.Name)
+                            for k, v in pairs(t:GetAttributes()) do
+                                print("  " .. k .. " = " .. tostring(v))
+                            end
+                            found = true
+                        end
+                    end
+                end
+            end
+            if not found then
+                print("[AutoShovel] No shovel tool found in character or backpack")
+                setStatus("❌ No shovel tool found — check console")
+            else
+                setStatus("✅ Shovel attrs printed to console")
+            end
+        end)
+
+        local ic = Frm(pShv, UDim2.new(1,0,0,62), UDim2.new(0,0,0,0), C.Card)
+        ic.LayoutOrder = n(); Rnd(ic,7)
+        Lbl(ic, "  ℹ️  Shovels plants with Age (cm) BELOW threshold.",
+            UDim2.new(1,0,0,18), UDim2.new(0,0,0,4),  C.TextSec, 11, false)
+        Lbl(ic, "  🍎  Plants with fruit are always skipped.",
+            UDim2.new(1,0,0,18), UDim2.new(0,0,0,22), C.Green, 11, false)
+        Lbl(ic, "  Default 500 cm ≈ 16.4 ft.  MaxAge 2235 = 73.3 ft.",
+            UDim2.new(1,0,0,18), UDim2.new(0,0,0,40), C.TextMut, 11, false)
+
+        RunService.Heartbeat:Connect(function()
+            shvDot2.BackgroundColor3 = CFG.ShovelEnabled and C.TglOn or C.TglOff
+            shvLbl2.Text = "Status: "..State.ShovelStatus
+            shvLbl2.TextColor3 = CFG.ShovelEnabled and C.TextPri or C.TextSec
+            det2Lbl.Text   = "  Plants detected: "..State.PlantsDetected
+            shoved2Lbl.Text = "  Plants shoveled: "..State.PlantsShoved
+        end)
+    end
+
+    -- ══════════════════════════════════════════════════════════════
+    -- PAGE: PLANT ESP
+    -- ══════════════════════════════════════════════════════════════
+    NavBtn("👁", "Plant ESP", "ESP")
+    local pEsp = MakePage("ESP")
+    do
+        local o = 0; local function n() o+=1; return o end
+
+        SecHdr(pEsp, "Status", n())
+        local _, espDot2, espLbl2 = StatusRow(pEsp, n())
+        local _, tagCountLbl       = InfoRow(pEsp, "Tags active: 0", n())
+
+        SecHdr(pEsp, "Control", n())
+        ToggleRow(pEsp, "Enable Plant ESP", n(), function(on)
+            CFG.ESPEnabled = on
+            if not on then
+                -- Clear all existing tags immediately
+                for plant in pairs(espTags) do removeESPTag(plant) end
+            end
+            setStatus(on and "👁 ESP enabled" or "👁 ESP disabled")
+        end)
+
+        ToggleRow(pEsp, "Show All Gardens", n(), function(on)
+            CFG.ESPAllGardens = on
+            -- Wipe tags so they're rebuilt for the new scope next tick
+            for plant in pairs(espTags) do removeESPTag(plant) end
+        end)
+
+        -- Legend card
+        SecHdr(pEsp, "Height Colour Legend", n())
+        local legend = Frm(pEsp, UDim2.new(1,0,0,76), UDim2.new(0,0,0,0), C.Card)
+        legend.LayoutOrder = n(); Rnd(legend,7)
+
+        local rows = {
+            { "🔴  Below threshold  (will be shoveled)", Color3.fromRGB(239,68,68)   },
+            { "🟡  Threshold → 2× threshold",            Color3.fromRGB(255,180,55)  },
+            { "🟢  Above 2× threshold",                  Color3.fromRGB(52,211,153)  },
+            { "⚪  No age data yet (still loading)",      Color3.fromRGB(140,140,160) },
+        }
+        for i, row in ipairs(rows) do
+            local y = 4 + (i-1)*17
+            local l = Lbl(legend, "  "..row[1],
+                UDim2.new(1,-8,0,14), UDim2.new(0,0,0,y), row[2], 11, false)
+            l.TextXAlignment = Enum.TextXAlignment.Left
+        end
+
+        -- Info
+        local infoCard = Frm(pEsp, UDim2.new(1,0,0,50), UDim2.new(0,0,0,0), C.Card)
+        infoCard.LayoutOrder = n(); Rnd(infoCard,7)
+        Lbl(infoCard, "  Tags show: seed name, height, 🍎 if fruit ready.",
+            UDim2.new(1,-8,0,18), UDim2.new(0,0,0,4),  C.TextSec, 11, false)
+        Lbl(infoCard, "  Visible up to 200 studs, always on top.",
+            UDim2.new(1,-8,0,18), UDim2.new(0,0,0,22), C.TextMut, 11, false)
+        Lbl(infoCard, "  'Show All Gardens' scans every plot on the server.",
+            UDim2.new(1,-8,0,18), UDim2.new(0,0,0,38), Color3.fromRGB(80,160,255), 11, false)
+
+        RunService.Heartbeat:Connect(function()
+            local cnt = 0
+            for _ in pairs(espTags) do cnt += 1 end
+            espDot2.BackgroundColor3 = CFG.ESPEnabled and C.TglOn or C.TglOff
+            espLbl2.Text = "ESP: "..(CFG.ESPEnabled and "Active ("..cnt.." tags)" or "Off")
+            espLbl2.TextColor3 = CFG.ESPEnabled and C.TextPri or C.TextSec
+            tagCountLbl.Text = "  Tags active: "..cnt
+        end)
+    end
+
+    -- ══════════════════════════════════════════════════════════════
+    -- Boot
+    -- ══════════════════════════════════════════════════════════════
+    ShowPage("Status")
+    setStatus("Ready — use sidebar tabs to enable Auto Plant, Shovel, and ESP")
